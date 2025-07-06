@@ -187,3 +187,73 @@ class TextProcessor:
                 return f"{num:,}"  # Add commas for large numbers
         except ValueError:
             return number_str 
+
+def chunk_text_by_sentences(text: str, max_words: int = 50) -> List[str]:
+    """
+    Split text into chunks, breaking at sentence boundaries after reaching max_words
+    """
+    # Split text into sentences using regex to handle multiple punctuation marks
+    sentences = re.split(r'([.!?]+\s*)', text)
+    
+    chunks = []
+    current_chunk = ""
+    current_word_count = 0
+    
+    i = 0
+    while i < len(sentences):
+        sentence = sentences[i].strip()
+        if not sentence:
+            i += 1
+            continue
+            
+        # Add punctuation if it exists
+        if i + 1 < len(sentences) and re.match(r'[.!?]+\s*', sentences[i + 1]):
+            sentence += sentences[i + 1]
+            i += 2
+        else:
+            i += 1
+        
+        sentence_words = len(sentence.split())
+        
+        # If adding this sentence would exceed max_words, start new chunk
+        if current_word_count > 0 and current_word_count + sentence_words > max_words:
+            if current_chunk.strip():
+                chunks.append(current_chunk.strip())
+            current_chunk = sentence
+            current_word_count = sentence_words
+        else:
+            current_chunk += " " + sentence if current_chunk else sentence
+            current_word_count += sentence_words
+    
+    # Add the last chunk if it exists
+    if current_chunk.strip():
+        chunks.append(current_chunk.strip())
+    
+    return chunks
+
+def adaptive_chunk_text(text: str, max_words: int = 50, reduce_on_error: bool = True) -> List[str]:
+    """
+    Adaptively chunk text, reducing chunk size if needed
+    """
+    chunks = chunk_text_by_sentences(text, max_words)
+    
+    if reduce_on_error and any(len(chunk.split()) > max_words for chunk in chunks):
+        # Recursively try with smaller chunk size
+        return adaptive_chunk_text(text, max_words - 10, reduce_on_error)
+    
+    return chunks
+
+def validate_text_input(text: str, max_chars: int = 13000) -> tuple[bool, str]:
+    """
+    Validate text input for TTS generation
+    """
+    if not text or not text.strip():
+        return False, "Text content is required"
+    
+    if len(text.strip()) < 10:
+        return False, "Text is too short (minimum 10 characters)"
+        
+    if len(text) > max_chars:
+        return False, f"Text is too long (maximum {max_chars} characters)"
+    
+    return True, "Text validation passed" 

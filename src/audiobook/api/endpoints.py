@@ -1,16 +1,29 @@
 """API endpoints for voice cloning and TTS."""
 
 from typing import List, Dict, Any, Optional
-from fastapi import FastAPI, File, UploadFile, HTTPException, Depends
-from fastapi.responses import Response, JSONResponse
+from fastapi import FastAPI, File, UploadFile, HTTPException, Depends, BackgroundTasks
+from fastapi.responses import Response, JSONResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 import numpy as np
 from ..tts.engine import TTSEngine
 from ..config import settings
 from .runpod_client import RunPodClient
+from ..tts.text_processor import validate_text_input
+from ..voice_management import VoiceManager
+from ..tts.audio_processor import AudioProcessor
+import os
+import tempfile
+import uuid
 
 from ..tts import AudiobookTTS
+from ..models import (
+    VoiceProfile,
+    TTSGenerationSettings,
+    AudioProcessingSettings,
+    ProjectMetadata,
+    AudioFormat
+)
 
 # API Models
 class VoiceProfile(BaseModel):
@@ -24,14 +37,11 @@ class VoiceProfile(BaseModel):
 
 class TTSRequest(BaseModel):
     """Text-to-speech generation request."""
-    text: str
-    voice_name: Optional[str] = None
-    exaggeration: Optional[float] = 0.5
-    temperature: Optional[float] = 0.8
-    cfg_weight: Optional[float] = 0.5
-    min_p: Optional[float] = 0.05
-    top_p: Optional[float] = 1.0
-    repetition_penalty: Optional[float] = 1.2
+    text: str = Field(..., description="Text to convert to speech")
+    voice_name: str = Field(..., description="Name of the voice profile to use")
+    chunk_size: int = Field(default=50, description="Maximum words per chunk")
+    enable_normalization: bool = Field(default=True, description="Whether to normalize audio output")
+    target_level_db: float = Field(default=-18.0, description="Target audio level in dB")
 
 class ChunkingRequest(BaseModel):
     """Text chunking request."""
@@ -112,64 +122,125 @@ def create_api(tts_engine: TTSEngine) -> FastAPI:
         except Exception as e:
             raise HTTPException(status_code=404, detail=str(e))
     
-    @app.post("/tts")
-    async def generate_speech(request: TTSRequest):
-        """Generate speech from text."""
-        try:
-            audio_data = tts_engine.generate_speech(
-                text=request.text,
-                voice_name=request.voice_name,
-                exaggeration=request.exaggeration,
-                temperature=request.temperature,
-                cfg_weight=request.cfg_weight,
-                min_p=request.min_p,
-                top_p=request.top_p,
-                repetition_penalty=request.repetition_penalty
-            )
-            return Response(
-                content=audio_data,
-                media_type="audio/wav"
-            )
-        except Exception as e:
-            raise HTTPException(
-                status_code=500,
-                detail=str(e)
-            )
-    
-    @app.post("/voices")
-    async def clone_voice(
-        request: VoiceCloneRequest,
-        audio_file: UploadFile = File(...)
+    @app.post("/tts/generate")
+    async def generate_tts(
+        generation_settings: TTSGenerationSettings,
+        processing_settings: AudioProcessingSettings = AudioProcessingSettings(),
+        background_tasks: BackgroundTasks = None
     ):
-        """Clone a voice from audio file."""
+        """Generate TTS audio from text using specified voice profile"""
+        # Validate text input
+        is_valid, message = validate_text_input(generation_settings.text)
+        if not is_valid:
+            raise HTTPException(status_code=400, detail=message)
+        
+        # Load voice profile
+        profile = voice_manager.get_voice_profile(generation_settings.voice_name)
+        if profile is None:
+            raise HTTPException(status_code=404, detail=f"Voice profile '{generation_settings.voice_name}' not found")
+        
         try:
-            audio_data = await audio_file.read()
-            voice_name = tts_engine.clone_voice(
-                audio_data=audio_data,
-                voice_name=request.voice_name,
-                description=request.description
+            # Generate audio chunks
+            audio_chunks = tts_engine.generate_tts(
+                generation_settings.text,
+                profile.audio_file,
+                chunk_size=generation_settings.chunk_size,
+                exaggeration=generation_settings.exaggeration or profile.exaggeration,
+                temperature=generation_settings.temperature or profile.temperature,
+                cfg_weight=generation_settings.cfg_weight or profile.cfg_weight
             )
-            return JSONResponse(
-                content={"voice_name": voice_name},
-                status_code=201
+            
+            # Process audio
+            if processing_settings.enable_normalization:
+                audio_chunks = [
+                    audio_processor.normalize_audio(chunk, processing_settings.target_level_db)
+                    for chunk in audio_chunks
+                ]
+            
+            # Combine chunks with crossfade
+            final_audio = audio_processor.combine_audio_chunks(
+                audio_chunks,
+                crossfade_duration=processing_settings.crossfade_duration
             )
+            
+            # Save to temporary file
+            temp_dir = tempfile.mkdtemp()
+            output_file = os.path.join(temp_dir, f"{uuid.uuid4()}.{processing_settings.output_format}")
+            
+            # Save combined audio
+            audio_processor.save_audio_chunks([final_audio], "temp", temp_dir)
+            
+            # Schedule cleanup
+            if background_tasks:
+                background_tasks.add_task(lambda: os.remove(output_file) if os.path.exists(output_file) else None)
+                background_tasks.add_task(lambda: os.rmdir(temp_dir) if os.path.exists(temp_dir) else None)
+            
+            return FileResponse(
+                output_file,
+                media_type=f"audio/{processing_settings.output_format}",
+                filename=f"generated_audio.{processing_settings.output_format}"
+            )
+            
         except Exception as e:
-            raise HTTPException(
-                status_code=500,
-                detail=str(e)
-            )
+            raise HTTPException(status_code=500, detail=str(e))
     
-    @app.get("/voices")
-    async def list_voices() -> List[Voice]:
-        """List all available voices."""
+    @app.post("/voice/create")
+    async def create_voice_profile(
+        profile: VoiceProfile,
+        audio_file: UploadFile = File(...),
+    ):
+        """Create a new voice profile"""
+        # Save uploaded file temporarily
+        temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".wav")
         try:
-            voices = tts_engine.list_voices()
-            return [Voice(**voice) for voice in voices]
-        except Exception as e:
-            raise HTTPException(
-                status_code=500,
-                detail=str(e)
+            content = await audio_file.read()
+            temp_file.write(content)
+            temp_file.close()
+            
+            # Validate audio sample
+            is_valid, message = voice_manager.validate_voice_sample(temp_file.name)
+            if not is_valid:
+                raise HTTPException(status_code=400, detail=message)
+            
+            # Save voice profile
+            result = voice_manager.save_voice_profile(
+                profile.name,
+                profile.display_name,
+                profile.description,
+                temp_file.name,
+                profile.exaggeration,
+                profile.cfg_weight,
+                profile.temperature,
+                profile.normalization_enabled,
+                profile.target_level_db
             )
+            
+            return {"message": result}
+            
+        finally:
+            if os.path.exists(temp_file.name):
+                os.unlink(temp_file.name)
+    
+    @app.delete("/voice/{voice_name}")
+    async def delete_voice_profile(voice_name: str):
+        """Delete a voice profile"""
+        message, profiles = voice_manager.delete_voice_profile(voice_name)
+        if "Error" in message or "not found" in message:
+            raise HTTPException(status_code=404, detail=message)
+        return {"message": message}
+    
+    @app.get("/voice/list")
+    async def list_voice_profiles() -> List[VoiceProfile]:
+        """List all available voice profiles"""
+        return voice_manager.get_voice_profiles()
+    
+    @app.get("/voice/{voice_name}")
+    async def get_voice_profile(voice_name: str) -> VoiceProfile:
+        """Get details of a specific voice profile"""
+        profile = voice_manager.get_voice_profile(voice_name)
+        if profile is None:
+            raise HTTPException(status_code=404, detail=f"Voice profile '{voice_name}' not found")
+        return profile
     
     @app.get("/health")
     async def health_check():

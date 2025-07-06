@@ -9,8 +9,9 @@ from pathlib import Path
 import firebase_admin
 from firebase_admin import credentials, storage
 from chatterbox.tts import ChatterboxTTS
-from audiobook.processing import chunk_text_by_sentences, parse_multi_voice_text
-from audiobook.voice_management import save_voice_profile
+from audiobook.tts.engine import TTSEngine
+from audiobook.tts.text_processor import chunk_text_by_sentences
+from audiobook.voice_management import VoiceManager
 
 # Initialize Firebase
 cred = credentials.Certificate(os.environ.get('FIREBASE_CREDENTIALS'))
@@ -19,17 +20,18 @@ firebase_admin.initialize_app(cred, {
 })
 bucket = storage.bucket()
 
-# Global variables to cache models
-tts_model = None
-device = None
+# Global variables to cache components
+tts_engine = None
+voice_manager = None
 
-def initialize_model():
-    """Initialize the TTS model if not already loaded"""
-    global tts_model, device
-    if tts_model is None:
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        tts_model = ChatterboxTTS(device=device)
-    return tts_model
+def initialize_components():
+    """Initialize the TTS engine and voice manager if not already loaded"""
+    global tts_engine, voice_manager
+    if tts_engine is None:
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        tts_engine = TTSEngine(device=device)
+        voice_manager = VoiceManager(os.environ.get('VOICE_LIBRARY_PATH', 'voice_library'))
+    return tts_engine, voice_manager
 
 def save_to_firebase(audio_data, filename):
     """Save audio data to Firebase Storage"""
@@ -41,33 +43,38 @@ def generate_tts(job):
     """Generate TTS audio from text"""
     input_data = job["input"]
     
-    # Initialize model
-    model = initialize_model()
+    # Initialize components
+    engine, voice_mgr = initialize_components()
     
     # Extract parameters
     text = input_data["text"]
     voice_name = input_data.get("voice_name")
     params = input_data.get("parameters", {})
     
-    # Extract generation parameters with defaults
-    exaggeration = params.get("exaggeration", 0.5)
-    temperature = params.get("temperature", 0.8)
-    cfg_weight = params.get("cfg_weight", 0.5)
-    min_p = params.get("min_p", 0.05)
-    top_p = params.get("top_p", 1.0)
-    repetition_penalty = params.get("repetition_penalty", 1.2)
+    # Load voice profile
+    audio_file, exaggeration, cfg_weight, temperature, message = voice_mgr.load_voice_profile(voice_name)
+    if audio_file is None:
+        raise ValueError(message)
     
-    # Generate audio with parameters
-    audio_data = model.generate_speech(
-        text, 
-        voice_name=voice_name,
+    # Generate audio chunks
+    audio_chunks = engine.generate_tts(
+        text,
+        audio_file,
+        chunk_size=50,  # Default chunk size
         exaggeration=exaggeration,
         temperature=temperature,
-        cfg_weight=cfg_weight,
-        min_p=min_p,
-        top_p=top_p,
-        repetition_penalty=repetition_penalty
+        cfg_weight=cfg_weight
     )
+    
+    # Combine chunks
+    final_audio = engine.audio_processor.combine_audio_chunks(audio_chunks)
+    
+    # Save to temporary WAV file
+    with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as temp_file:
+        engine.audio_processor.save_audio_chunks([final_audio], "temp", os.path.dirname(temp_file.name))
+        with open(temp_file.name, 'rb') as f:
+            audio_data = f.read()
+        os.unlink(temp_file.name)
     
     # Convert audio data to base64
     audio_base64 = base64.b64encode(audio_data).decode()
@@ -81,12 +88,14 @@ def clone_voice(job):
     """Clone a voice from reference audio"""
     input_data = job["input"]
     
-    # Initialize model
-    model = initialize_model()
+    # Initialize components
+    _, voice_mgr = initialize_components()
     
     # Extract parameters
     reference_audio = base64.b64decode(input_data["reference_audio"])
     voice_name = input_data["voice_name"]
+    display_name = input_data.get("display_name", voice_name)
+    description = input_data.get("description", "")
     
     # Save reference audio temporarily
     with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as temp_file:
@@ -95,9 +104,20 @@ def clone_voice(job):
     
     # Clone voice
     try:
-        save_voice_profile(temp_path, voice_name)
+        # Validate audio sample
+        is_valid, message = voice_mgr.validate_voice_sample(temp_path)
+        if not is_valid:
+            raise ValueError(message)
+            
+        # Save voice profile
+        result = voice_mgr.save_voice_profile(
+            voice_name,
+            display_name,
+            description,
+            temp_path
+        )
         success = True
-        message = f"Voice {voice_name} cloned successfully"
+        message = result
     except Exception as e:
         success = False
         message = str(e)
