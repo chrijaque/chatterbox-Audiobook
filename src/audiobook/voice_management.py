@@ -21,7 +21,7 @@ def ensure_voice_library_exists(voice_library_path: str) -> None:
 
 
 def get_voice_profiles(voice_library_path: str) -> List[Dict[str, Any]]:
-    """Get all voice profiles from the voice library.
+    """Get list of available voice profiles.
     
     Args:
         voice_library_path: Path to voice library directory
@@ -29,24 +29,26 @@ def get_voice_profiles(voice_library_path: str) -> List[Dict[str, Any]]:
     Returns:
         List of voice profile dictionaries
     """
-    ensure_voice_library_exists(voice_library_path)
     profiles = []
+    library_path = Path(voice_library_path)
     
-    try:
-        for item in os.listdir(voice_library_path):
-            profile_dir = os.path.join(voice_library_path, item)
-            if os.path.isdir(profile_dir):
-                config_file = os.path.join(profile_dir, "config.json")
-                if os.path.exists(config_file):
-                    try:
-                        with open(config_file, 'r', encoding='utf-8') as f:
-                            profile = json.load(f)
-                            profile['voice_name'] = item
-                            profiles.append(profile)
-                    except Exception as e:
-                        print(f"Warning: Could not load profile {item}: {e}")
-    except Exception as e:
-        print(f"Warning: Could not read voice library: {e}")
+    if not library_path.exists():
+        return profiles
+    
+    for item in library_path.iterdir():
+        if not item.is_dir():
+            continue
+        
+        config_path = item / "config.json"
+        if not config_path.exists():
+            continue
+        
+        try:
+            with open(config_path, "r") as f:
+                config = json.load(f)
+            profiles.append(config)
+        except Exception:
+            continue
     
     return profiles
 
@@ -79,37 +81,51 @@ def get_audiobook_voice_choices(voice_library_path: str) -> List[str]:
     return choices
 
 
-def get_voice_config(voice_library_path: str, voice_name: str) -> Dict[str, Any]:
+def get_voice_config(voice_library_path: str, voice_name: str) -> Optional[Dict[str, Any]]:
     """Get configuration for a specific voice.
     
     Args:
         voice_library_path: Path to voice library directory
-        voice_name: Name of the voice
+        voice_name: Name of voice to get config for
         
     Returns:
-        Voice configuration dictionary
+        Voice configuration dictionary or None if not found
     """
-    profile_dir = os.path.join(voice_library_path, voice_name)
-    config_file = os.path.join(profile_dir, "config.json")
+    voice_path = Path(voice_library_path) / voice_name
+    config_path = voice_path / "config.json"
     
-    default_config = {
-        'voice_name': voice_name,
-        'display_name': voice_name,
-        'description': '',
-        'exaggeration': 1.0,
-        'cfg_weight': 1.0,
-        'temperature': 0.7
-    }
+    if not config_path.exists():
+        return None
     
-    if os.path.exists(config_file):
-        try:
-            with open(config_file, 'r', encoding='utf-8') as f:
-                config = json.load(f)
-                return {**default_config, **config}
-        except Exception as e:
-            print(f"Warning: Could not load config for {voice_name}: {e}")
+    try:
+        with open(config_path, "r") as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+
+def find_voice_file(voice_library_path: str, voice_name: str) -> Optional[str]:
+    """Find the voice audio file for a profile.
     
-    return default_config
+    Args:
+        voice_library_path: Path to voice library directory
+        voice_name: Name of voice to find file for
+        
+    Returns:
+        Path to voice audio file or None if not found
+    """
+    voice_path = Path(voice_library_path) / voice_name
+    
+    if not voice_path.exists():
+        return None
+    
+    # Check common extensions
+    for ext in [".wav", ".mp3", ".ogg"]:
+        audio_path = voice_path / f"voice{ext}"
+        if audio_path.exists():
+            return str(audio_path)
+    
+    return None
 
 
 def load_voice_for_tts(voice_library_path: str, voice_name: str) -> Tuple[Optional[str], Dict[str, Any]]:
@@ -125,16 +141,16 @@ def load_voice_for_tts(voice_library_path: str, voice_name: str) -> Tuple[Option
     if not voice_name:
         return None, {}
     
-    profile_dir = os.path.join(voice_library_path, voice_name)
-    if not os.path.exists(profile_dir):
+    profile_dir = Path(voice_library_path) / voice_name
+    if not profile_dir.exists():
         return None, {}
     
     # Look for audio file
     audio_file = None
     for ext in ['.wav', '.mp3', '.flac']:
-        potential_file = os.path.join(profile_dir, f"voice{ext}")
-        if os.path.exists(potential_file):
-            audio_file = potential_file
+        potential_file = profile_dir / f"voice{ext}"
+        if potential_file.exists():
+            audio_file = str(potential_file)
             break
     
     # Get voice configuration
@@ -146,74 +162,50 @@ def load_voice_for_tts(voice_library_path: str, voice_name: str) -> Tuple[Option
 def save_voice_profile(
     voice_library_path: str,
     voice_name: str,
-    display_name: str,
-    description: str,
-    audio_file: Any,
-    exaggeration: float,
-    cfg_weight: float,
-    temperature: float
+    audio_data: bytes,
+    display_name: Optional[str] = None,
+    description: Optional[str] = None,
+    **kwargs
 ) -> str:
-    """Save a new voice profile to the library.
+    """Save a new voice profile.
     
     Args:
         voice_library_path: Path to voice library directory
-        voice_name: Internal voice name (used for directory)
-        display_name: Display name for UI
-        description: Voice description
-        audio_file: Audio file data from Gradio
-        exaggeration: Exaggeration parameter
-        cfg_weight: CFG weight parameter
-        temperature: Temperature parameter
+        voice_name: Name for the voice profile
+        audio_data: Raw audio data bytes
+        display_name: Display name for the voice
+        description: Description of the voice
+        **kwargs: Additional profile settings
         
     Returns:
-        Status message
+        Name of saved voice profile
     """
-    if not voice_name.strip():
-        return "❌ Voice name cannot be empty"
+    # Sanitize voice name
+    safe_name = "".join(c.lower() if c.isalnum() else "_" for c in voice_name)
     
-    # Sanitize voice name for directory
-    safe_voice_name = "".join(c for c in voice_name if c.isalnum() or c in (' ', '-', '_')).strip()
-    safe_voice_name = safe_voice_name.replace(' ', '_')
+    # Create profile directory
+    voice_path = Path(voice_library_path) / safe_name
+    voice_path.mkdir(parents=True, exist_ok=True)
     
-    if not safe_voice_name:
-        return "❌ Voice name contains only invalid characters"
+    # Save audio file
+    audio_path = voice_path / "voice.wav"
+    with open(audio_path, "wb") as f:
+        f.write(audio_data)
     
-    ensure_voice_library_exists(voice_library_path)
+    # Save config
+    config = {
+        "voice_name": safe_name,
+        "display_name": display_name or voice_name,
+        "description": description,
+        "audio_file": "voice.wav",
+        **kwargs
+    }
     
-    profile_dir = os.path.join(voice_library_path, safe_voice_name)
-    os.makedirs(profile_dir, exist_ok=True)
+    config_path = voice_path / "config.json"
+    with open(config_path, "w") as f:
+        json.dump(config, f, indent=2)
     
-    try:
-        # Save audio file
-        if audio_file is not None:
-            audio_path = os.path.join(profile_dir, "voice.wav")
-            if isinstance(audio_file, str):
-                # File path provided
-                shutil.copy2(audio_file, audio_path)
-            elif hasattr(audio_file, 'name'):
-                # Gradio file object
-                shutil.copy2(audio_file.name, audio_path)
-            else:
-                return "❌ Invalid audio file format"
-        
-        # Save configuration
-        config = {
-            'voice_name': safe_voice_name,
-            'display_name': display_name or safe_voice_name,
-            'description': description or '',
-            'exaggeration': float(exaggeration),
-            'cfg_weight': float(cfg_weight),
-            'temperature': float(temperature)
-        }
-        
-        config_path = os.path.join(profile_dir, "config.json")
-        with open(config_path, 'w', encoding='utf-8') as f:
-            json.dump(config, f, indent=2)
-        
-        return f"✅ Voice profile '{display_name}' saved successfully"
-        
-    except Exception as e:
-        return f"❌ Error saving voice profile: {str(e)}"
+    return safe_name
 
 
 def load_voice_profile(voice_library_path: str, voice_name: str) -> Tuple[str, str, str, float, float, float]:
@@ -242,29 +234,29 @@ def load_voice_profile(voice_library_path: str, voice_name: str) -> Tuple[str, s
     )
 
 
-def delete_voice_profile(voice_library_path: str, voice_name: str) -> str:
-    """Delete a voice profile from the library.
+def delete_voice_profile(voice_library_path: str, voice_name: str) -> bool:
+    """Delete a voice profile.
     
     Args:
         voice_library_path: Path to voice library directory
         voice_name: Name of voice to delete
         
     Returns:
-        Status message
+        True if deleted successfully, False otherwise
     """
     if not voice_name:
-        return "❌ No voice selected for deletion"
+        return False
     
-    profile_dir = os.path.join(voice_library_path, voice_name)
+    voice_path = Path(voice_library_path) / voice_name
     
-    if not os.path.exists(profile_dir):
-        return f"❌ Voice profile '{voice_name}' not found"
+    if not voice_path.exists():
+        return False
     
     try:
-        shutil.rmtree(profile_dir)
-        return f"✅ Voice profile '{voice_name}' deleted successfully"
-    except Exception as e:
-        return f"❌ Error deleting voice profile: {str(e)}"
+        shutil.rmtree(voice_path)
+        return True
+    except Exception:
+        return False
 
 
 def refresh_voice_list(voice_library_path: str) -> List[str]:
