@@ -6,45 +6,33 @@ import json
 import tempfile
 import os
 from pathlib import Path
-import firebase_admin
-from firebase_admin import credentials, storage
 from chatterbox.tts import ChatterboxTTS
 from audiobook.tts.engine import TTSEngine
 from audiobook.tts.text_processor import chunk_text_by_sentences
 from audiobook.voice_management import VoiceManager
-
-# Initialize Firebase
-cred = credentials.Certificate(os.environ.get('FIREBASE_CREDENTIALS'))
-firebase_admin.initialize_app(cred, {
-    'storageBucket': os.environ.get('FIREBASE_STORAGE_BUCKET')
-})
-bucket = storage.bucket()
+from audiobook.config.paths import PathManager
 
 # Global variables to cache components
 tts_engine = None
 voice_manager = None
+path_manager = None
 
 def initialize_components():
     """Initialize the TTS engine and voice manager if not already loaded"""
-    global tts_engine, voice_manager
+    global tts_engine, voice_manager, path_manager
     if tts_engine is None:
         device = "cuda" if torch.cuda.is_available() else "cpu"
         tts_engine = TTSEngine(device=device)
-        voice_manager = VoiceManager(os.environ.get('VOICE_LIBRARY_PATH', 'voice_library'))
-    return tts_engine, voice_manager
-
-def save_to_firebase(audio_data, filename):
-    """Save audio data to Firebase Storage"""
-    blob = bucket.blob(f'tts_output/{filename}')
-    blob.upload_from_string(audio_data, content_type='audio/wav')
-    return blob.public_url
+        path_manager = PathManager()
+        voice_manager = VoiceManager(path_manager.voice_library_dir)
+    return tts_engine, voice_manager, path_manager
 
 def generate_tts(job):
     """Generate TTS audio from text"""
     input_data = job["input"]
     
     # Initialize components
-    engine, voice_mgr = initialize_components()
+    engine, voice_mgr, paths = initialize_components()
     
     # Extract parameters
     text = input_data["text"]
@@ -69,14 +57,13 @@ def generate_tts(job):
     # Combine chunks
     final_audio = engine.audio_processor.combine_audio_chunks(audio_chunks)
     
-    # Save to temporary WAV file
-    with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as temp_file:
-        engine.audio_processor.save_audio_chunks([final_audio], "temp", os.path.dirname(temp_file.name))
-        with open(temp_file.name, 'rb') as f:
-            audio_data = f.read()
-        os.unlink(temp_file.name)
+    # Save to output directory with unique name
+    output_path = paths.get_tts_output_path() / f"{voice_name}_{hash(text)[:8]}.wav"
+    engine.audio_processor.save_audio_chunks([final_audio], output_path)
     
-    # Convert audio data to base64
+    # Read the saved file and convert to base64
+    with open(output_path, 'rb') as f:
+        audio_data = f.read()
     audio_base64 = base64.b64encode(audio_data).decode()
     
     return {
@@ -89,7 +76,7 @@ def clone_voice(job):
     input_data = job["input"]
     
     # Initialize components
-    _, voice_mgr = initialize_components()
+    _, voice_mgr, paths = initialize_components()
     
     # Extract parameters
     reference_audio = base64.b64decode(input_data["reference_audio"])

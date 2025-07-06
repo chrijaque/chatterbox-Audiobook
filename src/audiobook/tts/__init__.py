@@ -5,16 +5,14 @@ from .engine import TTSEngine
 from .text_processor import TextProcessor, TextChunk
 from .audio_processor import AudioProcessor
 
-import runpod
-import base64
-import json
 import os
-import shutil
-from typing import Optional, List, Dict, Any
+import json
+import time
 from pathlib import Path
-from datetime import datetime
+from typing import Optional, List, Dict, Any, NamedTuple
 from ..config import settings
 from ..config.paths import PathManager
+from ..voice_management import VoiceManager
 
 __all__ = [
     'TTSEngine',
@@ -24,36 +22,49 @@ __all__ = [
     'AudiobookTTS'
 ]
 
+class VoiceProfile(NamedTuple):
+    """Voice profile information."""
+    name: str
+    description: str
+    created_date: str
+
 class AudiobookTTS:
     """TTS engine for audiobook generation."""
     
-    def __init__(self):
-        if settings.is_runpod_configured:
-            runpod.api_key = settings.RUNPOD_API_KEY
-            self.endpoint_id = settings.RUNPOD_ENDPOINT_ID
-            self.use_runpod = True
-        else:
-            self.use_runpod = False
+    def __init__(self, use_runpod: bool = False):
+        """Initialize TTS engine.
+        
+        Args:
+            use_runpod: Whether to use RunPod for voice cloning
+        """
+        self.use_runpod = use_runpod and settings.is_runpod_configured
+        if use_runpod and not settings.is_runpod_configured:
+            print("Warning: RunPod requested but not configured. Voice cloning will be disabled.")
+            
         self.path_manager = PathManager()
+        self.voice_manager = VoiceManager()
+        self.audio_processor = AudioProcessor()
+        self.text_processor = TextProcessor()
+        self.tts_engine = TTSEngine()
 
     def save_voice_sample(
         self,
-        audio_data: bytes,
-        voice_name: str,
+        audio_path: str,
+        name: str,
         description: Optional[str] = None
     ) -> str:
         """Save a voice sample recording.
         
         Args:
-            audio_data: Raw audio data in WAV format
-            voice_name: Name for the voice sample
+            audio_path: Path to the audio file
+            name: Name for the voice sample
             description: Optional description of the voice
             
         Returns:
             str: Name of the saved voice sample
         """
         # Sanitize voice name
-        safe_name = self._sanitize_name(voice_name)
+        safe_name = self._sanitize_name(name)
         if not safe_name:
             raise ValueError("Invalid voice name")
             
@@ -61,18 +72,17 @@ class AudiobookTTS:
         voice_dir = self.path_manager.get_voice_samples_path() / safe_name
         voice_dir.mkdir(parents=True, exist_ok=True)
         
-        # Save sample audio
+        # Copy sample audio
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        audio_path = voice_dir / f"sample_{timestamp}.wav"
-        with open(audio_path, "wb") as f:
-            f.write(audio_data)
+        dest_path = voice_dir / f"sample_{timestamp}.wav"
+        shutil.copy2(audio_path, dest_path)
             
         # Create metadata
         metadata = {
-            "display_name": voice_name,
+            "display_name": name,
             "description": description or "",
             "created_date": str(datetime.now().timestamp()),
-            "samples": [audio_path.name]
+            "samples": [dest_path.name]
         }
         
         metadata_path = voice_dir / "metadata.json"
@@ -80,7 +90,7 @@ class AudiobookTTS:
             # Update existing metadata
             with open(metadata_path, "r") as f:
                 existing = json.load(f)
-                existing["samples"].append(audio_path.name)
+                existing["samples"].append(dest_path.name)
                 metadata["samples"] = existing["samples"]
         
         with open(metadata_path, "w") as f:
@@ -88,247 +98,127 @@ class AudiobookTTS:
             
         return safe_name
 
-    def clone_voice(
-        self,
-        audio_data: bytes,
-        voice_name: str,
-        description: Optional[str] = None
-    ) -> str:
-        """Clone a voice from audio data.
+    def list_voice_profiles(self) -> List[VoiceProfile]:
+        """List all available voice profiles (samples and clones).
+        
+        Returns:
+            List[VoiceProfile]: List of voice profiles
+        """
+        profiles = []
+        
+        # List voice samples
+        samples_dir = self.path_manager.get_voice_samples_path()
+        if samples_dir.exists():
+            for voice_dir in samples_dir.iterdir():
+                if voice_dir.is_dir():
+                    metadata_path = voice_dir / "metadata.json"
+                    try:
+                        if metadata_path.exists():
+                            with open(metadata_path, "r") as f:
+                                metadata = json.load(f)
+                        else:
+                            # Create default metadata for existing samples
+                            metadata = {
+                                "display_name": voice_dir.name,
+                                "description": "",
+                                "created_date": str(voice_dir.stat().st_ctime),
+                                "samples": [f.name for f in voice_dir.glob("*.wav")]
+                            }
+                            with open(metadata_path, "w") as f:
+                                json.dump(metadata, f, indent=2)
+                        
+                        profiles.append(VoiceProfile(
+                            name=voice_dir.name,
+                            description=metadata.get("description", ""),
+                            created_date=metadata.get("created_date", "")
+                        ))
+                    except Exception as e:
+                        print(f"Warning: Error handling metadata for {voice_dir}: {e}")
+                        continue
+        
+        # List voice clones
+        clones_dir = self.path_manager.get_voice_clones_path()
+        if clones_dir.exists():
+            for voice_dir in clones_dir.iterdir():
+                if voice_dir.is_dir():
+                    config_path = voice_dir / "config.json"
+                    if config_path.exists():
+                        try:
+                            with open(config_path, "r") as f:
+                                config = json.load(f)
+                                profiles.append(VoiceProfile(
+                                    name=voice_dir.name,
+                                    description=config.get("description", ""),
+                                    created_date=config.get("created_date", "")
+                                ))
+                        except Exception as e:
+                            print(f"Error loading config for {voice_dir}: {e}")
+        
+        return sorted(profiles, key=lambda p: p.created_date, reverse=True)
+
+    def delete_voice_profile(self, voice_name: str) -> str:
+        """Delete a voice profile (sample or clone).
         
         Args:
-            audio_data: Raw audio data in WAV format
-            voice_name: Name for the cloned voice
-            description: Optional description of the voice
+            voice_name: Name of the voice to delete
             
         Returns:
-            str: Name of the created voice
+            str: Success message
         """
-        # Sanitize voice name
-        safe_name = self._sanitize_name(voice_name)
-        if not safe_name:
-            raise ValueError("Invalid voice name")
-            
-        # Create voice clone directory
-        voice_dir = self.path_manager.get_voice_clones_path() / safe_name
-        voice_dir.mkdir(parents=True, exist_ok=True)
+        # Check samples directory
+        sample_dir = self.path_manager.get_voice_samples_path() / voice_name
+        if sample_dir.exists():
+            shutil.rmtree(sample_dir)
+            return f"Deleted voice sample: {voice_name}"
         
-        # Save reference audio
-        audio_path = voice_dir / "reference.wav"
-        with open(audio_path, "wb") as f:
-            f.write(audio_data)
-            
-        # Create config
-        config = {
-            "display_name": voice_name,
-            "description": description or "",
-            "reference_audio": "reference.wav",
-            "exaggeration": 0.5,
-            "cfg_weight": 0.5,
-            "temperature": 0.8,
-            "created_date": str(datetime.now().timestamp()),
-            "min_p": 0.05,
-            "top_p": 1.0,
-            "repetition_penalty": 1.2,
-            "version": "2.1"
-        }
+        # Check clones directory
+        clone_dir = self.path_manager.get_voice_clones_path() / voice_name
+        if clone_dir.exists():
+            shutil.rmtree(clone_dir)
+            return f"Deleted voice clone: {voice_name}"
         
-        config_path = voice_dir / "config.json"
-        with open(config_path, "w") as f:
-            json.dump(config, f, indent=2)
-            
-        return safe_name
+        raise ValueError(f"Voice not found: {voice_name}")
 
-    def generate_speech(
-        self,
-        text: str,
-        voice_name: Optional[str] = None,
-        exaggeration: float = 0.5,
-        temperature: float = 0.8,
-        cfg_weight: float = 0.5,
-        min_p: float = 0.05,
-        top_p: float = 1.0,
-        repetition_penalty: float = 1.2
-    ) -> bytes:
-        """Generate speech using RunPod."""
-        if not self.use_runpod:
-            raise RuntimeError("RunPod is not configured")
+    def generate_speech(self, text: str, voice_name: str) -> str:
+        """Generate speech from text using specified voice."""
+        # Process text
+        chunks = self.text_processor.process(text)
+        
+        # Get voice profile
+        voice = self.voice_manager.get_voice_profile(voice_name)
+        if not voice:
+            raise ValueError(f"Voice '{voice_name}' not found")
             
-        endpoint = runpod.Endpoint(self.endpoint_id)
+        # Generate audio
+        output_path = self.path_manager.get_output_path() / f"{voice_name}_{int(time.time())}.wav"
+        self.tts_engine.generate(
+            text=chunks,
+            voice=voice,
+            output_path=output_path
+        )
         
-        # If using a voice, load its config
-        voice_config = {}
-        if voice_name:
-            config_path = self.path_manager.get_voice_clones_path() / voice_name / "config.json"
-            if config_path.exists():
-                try:
-                    with open(config_path, "r") as f:
-                        voice_config = json.load(f)
-                except Exception as e:
-                    print(f"Error loading voice config: {e}")
+        return str(output_path)
         
-        # Merge voice config with provided parameters
-        params = {
-            "text": text,
-            "voice_name": voice_name,
-            **{k: voice_config.get(k, v) for k, v in {
-                "exaggeration": exaggeration,
-                "temperature": temperature,
-                "cfg_weight": cfg_weight,
-                "min_p": min_p,
-                "top_p": top_p,
-                "repetition_penalty": repetition_penalty
-            }.items()}
-        }
-        
-        response = endpoint.run(params)
-        
-        if response.get("error"):
-            raise RuntimeError(f"RunPod error: {response['error']}")
-            
-        audio_data = base64.b64decode(response["audio"])
-        
-        # Save the output
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        output_name = f"{voice_name or 'default'}_{timestamp}"
-        output_dir = self.path_manager.get_tts_output_path() / self._sanitize_name(output_name)
-        output_dir.mkdir(parents=True, exist_ok=True)
-        
-        # Save audio and metadata
-        audio_path = output_dir / "audio.wav"
-        with open(audio_path, "wb") as f:
-            f.write(audio_data)
-            
-        metadata = {
-            "text": text,
-            "voice_name": voice_name,
-            "created_date": str(datetime.now().timestamp()),
-            "parameters": {
-                "exaggeration": exaggeration,
-                "temperature": temperature,
-                "cfg_weight": cfg_weight,
-                "min_p": min_p,
-                "top_p": top_p,
-                "repetition_penalty": repetition_penalty
-            }
-        }
-        
-        with open(output_dir / "metadata.json", "w") as f:
-            json.dump(metadata, f, indent=2)
-            
-        return audio_data
-
-    def list_voice_samples(self) -> List[Dict[str, Any]]:
-        """List all available voice samples.
-        
-        Returns:
-            List[dict]: List of voice sample information
-        """
-        samples = []
-        
-        try:
-            for voice_dir in self.path_manager.get_voice_samples_path().iterdir():
-                if not voice_dir.is_dir():
-                    continue
-                    
-                metadata_path = voice_dir / "metadata.json"
-                if not metadata_path.exists():
-                    continue
-                    
-                try:
-                    with open(metadata_path, "r") as f:
-                        metadata = json.load(f)
-                    samples.append({
-                        "name": voice_dir.name,
-                        "display_name": metadata.get("display_name", voice_dir.name),
-                        "description": metadata.get("description", ""),
-                        "created_date": metadata.get("created_date"),
-                        "sample_count": len(metadata.get("samples", []))
-                    })
-                except Exception as e:
-                    print(f"Error loading voice sample {voice_dir.name}: {e}")
-                    
-        except Exception as e:
-            print(f"Error listing voice samples: {e}")
-            
-        return samples
-
-    def list_voice_clones(self) -> List[Dict[str, Any]]:
-        """List all available voice clones.
-        
-        Returns:
-            List[dict]: List of voice clone information
-        """
-        clones = []
-        
-        try:
-            for voice_dir in self.path_manager.get_voice_clones_path().iterdir():
-                if not voice_dir.is_dir():
-                    continue
-                    
-                config_path = voice_dir / "config.json"
-                if not config_path.exists():
-                    continue
-                    
-                try:
-                    with open(config_path, "r") as f:
-                        config = json.load(f)
-                    clones.append({
-                        "name": voice_dir.name,
-                        "display_name": config.get("display_name", voice_dir.name),
-                        "description": config.get("description", ""),
-                        "created_date": config.get("created_date")
-                    })
-                except Exception as e:
-                    print(f"Error loading voice clone {voice_dir.name}: {e}")
-                    
-        except Exception as e:
-            print(f"Error listing voice clones: {e}")
-            
-        return clones
-
-    def delete_voice_sample(self, voice_name: str) -> bool:
-        """Delete a voice sample.
-        
-        Args:
-            voice_name: Name of the voice sample to delete
-            
-        Returns:
-            bool: True if successful, False otherwise
-        """
-        voice_dir = self.path_manager.get_voice_samples_path() / voice_name
-        if not voice_dir.exists():
-            return False
-            
-        try:
-            shutil.rmtree(voice_dir)
-            return True
-        except Exception as e:
-            print(f"Error deleting voice sample {voice_name}: {e}")
-            return False
-
-    def delete_voice_clone(self, voice_name: str) -> bool:
-        """Delete a voice clone.
-        
-        Args:
-            voice_name: Name of the voice clone to delete
-            
-        Returns:
-            bool: True if successful, False otherwise
-        """
-        voice_dir = self.path_manager.get_voice_clones_path() / voice_name
-        if not voice_dir.exists():
-            return False
-            
-        try:
-            shutil.rmtree(voice_dir)
-            return True
-        except Exception as e:
-            print(f"Error deleting voice clone {voice_name}: {e}")
-            return False
+    def list_voices(self) -> List[Dict[str, Any]]:
+        """List available voices."""
+        return [v.dict() for v in self.voice_manager.get_voice_profiles()]
 
     @staticmethod
     def _sanitize_name(name: str) -> str:
-        """Sanitize a name for use in filenames."""
-        safe_name = "".join(c for c in name if c.isalnum() or c in (' ', '-', '_')).strip()
-        return safe_name.replace(' ', '_') 
+        """Sanitize a name for use in filenames.
+        
+        Args:
+            name: Name to sanitize
+            
+        Returns:
+            str: Sanitized name
+        """
+        if not name:
+            return ""
+        # Replace spaces and special characters with underscores
+        safe_name = "".join(c if c.isalnum() else "_" for c in name.lower())
+        # Remove consecutive underscores
+        while "__" in safe_name:
+            safe_name = safe_name.replace("__", "_")
+        # Remove leading/trailing underscores
+        return safe_name.strip("_") 

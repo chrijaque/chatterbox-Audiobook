@@ -20,11 +20,36 @@ class TextChunk:
 class TextProcessor:
     """Handles text processing and chunking for TTS generation."""
     
-    def __init__(self, preset: TextPreset = TextPreset()):
+    def __init__(self, preset: TextPreset = TextPreset.AUDIOBOOK):
         self.preset = preset
         self.sentence_end_pattern = re.compile(r'[.!?]+[\s"\')\]]*(\\n)?')
         self.word_pattern = re.compile(r'\b\w+\b')
         self.whitespace_pattern = re.compile(r'\s+')
+        
+        # Pause durations in seconds
+        self._pause_settings = {
+            TextPreset.AUDIOBOOK: {
+                'paragraph_pause': 1.0,
+                'end_sentence_pause': 0.5,
+                'punctuation_pause': 0.2,
+            },
+            TextPreset.DIALOGUE: {
+                'paragraph_pause': 1.5,
+                'end_sentence_pause': 0.7,
+                'punctuation_pause': 0.3,
+            },
+            TextPreset.NARRATION: {
+                'paragraph_pause': 0.8,
+                'end_sentence_pause': 0.4,
+                'punctuation_pause': 0.15,
+            }
+        }
+        
+        # Set pause attributes based on preset
+        preset_pauses = self._pause_settings[preset]
+        self.paragraph_pause = preset_pauses['paragraph_pause']
+        self.end_sentence_pause = preset_pauses['end_sentence_pause']
+        self.punctuation_pause = preset_pauses['punctuation_pause']
     
     def count_words(self, text: str) -> int:
         """Count the number of words in a text string."""
@@ -143,16 +168,16 @@ class TextProcessor:
     def estimate_pause_duration(self, chunk: TextChunk, next_chunk: Optional[TextChunk] = None) -> float:
         """Estimate the appropriate pause duration after a chunk."""
         if not next_chunk:  # End of text
-            return self.preset.paragraph_pause
+            return self.paragraph_pause
             
         if not chunk.is_complete_sentence:
-            return self.preset.punctuation_pause
+            return self.punctuation_pause
             
         # Check if chunks are from different paragraphs
         if "\\n" in chunk.text[-5:] or "\\n" in next_chunk.text[:5]:
-            return self.preset.paragraph_pause
+            return self.paragraph_pause
             
-        return self.preset.end_sentence_pause
+        return self.end_sentence_pause
     
     def clean_text(self, text: str) -> str:
         """Clean and normalize text for TTS processing."""

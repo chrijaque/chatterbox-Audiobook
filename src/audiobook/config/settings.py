@@ -3,6 +3,10 @@ Global settings and configuration for the audiobook TTS system.
 """
 import os
 from pathlib import Path
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
 
 # Audio Settings
 SAMPLE_RATE = 24000

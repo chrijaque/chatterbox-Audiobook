@@ -9,39 +9,62 @@ import json
 import time
 import shutil
 from pathlib import Path
-from typing import List, Dict, Tuple, Optional
+from typing import List, Dict, Tuple, Optional, Any
 import librosa
 import soundfile as sf
 from .tts.audio_processor import AudioProcessor
-from .models import VoiceProfile
+from .models import VoiceProfile, RunPodJobInput
+from .config import PathManager, settings
+
+# Import RunPod client without system checks
+try:
+    from .api.runpod_client import RunPodClient
+    RUNPOD_AVAILABLE = True
+except Exception as e:
+    print(f"Warning: RunPod client import failed ({str(e)})")
+    RUNPOD_AVAILABLE = False
 
 
 class VoiceManager:
-    def __init__(self, voice_library_path: str):
+    def __init__(self, voice_library_path: Optional[str] = None):
         """Initialize voice manager with path to voice library"""
-        self.voice_library_path = voice_library_path
-        self.clones_path = os.path.join(voice_library_path, "clones")
+        self.path_manager = PathManager(voice_library_path)
         self.audio_processor = AudioProcessor()
         
-        # Create directories if they don't exist
-        os.makedirs(self.voice_library_path, exist_ok=True)
-        os.makedirs(self.clones_path, exist_ok=True)
+        # Initialize RunPod client if configured
+        self.runpod_client = None
+        if settings.is_runpod_configured:
+            try:
+                self.runpod_client = RunPodClient(
+                    api_key=settings.RUNPOD_API_KEY,
+                    endpoint_id=settings.ENDPOINT_ID
+                )
+            except Exception as e:
+                print(f"Warning: Failed to initialize RunPod client ({str(e)})")
 
     def get_voice_profiles(self) -> List[VoiceProfile]:
         """Get list of all available voice profiles"""
         profiles = []
-        for voice_name in os.listdir(self.clones_path):
-            profile = self.get_voice_profile(voice_name)
+        clones_dir = self.path_manager.get_voice_clones_path()
+        
+        if not clones_dir.exists():
+            return profiles
+            
+        for voice_dir in clones_dir.iterdir():
+            if not voice_dir.is_dir():
+                continue
+                
+            profile = self.get_voice_profile(voice_dir.name)
             if profile:
                 profiles.append(profile)
         return profiles
 
     def get_voice_profile(self, voice_name: str) -> Optional[VoiceProfile]:
         """Get a specific voice profile by name"""
-        voice_dir = os.path.join(self.clones_path, voice_name)
-        config_file = os.path.join(voice_dir, "config.json")
+        voice_dir = self.path_manager.get_voice_clones_path() / voice_name
+        config_file = voice_dir / "config.json"
         
-        if not os.path.exists(config_file):
+        if not config_file.exists():
             return None
             
         try:
@@ -54,11 +77,11 @@ class VoiceManager:
                     "name": voice_name,
                     "display_name": voice_name,
                     "description": None,
-                    "audio_file": os.path.join(voice_dir, "reference.wav"),
+                    "audio_file": str(voice_dir / "reference.wav"),
                     "exaggeration": config.get("exaggeration", 0.5),
                     "cfg_weight": config.get("cfg_weight", 0.5),
                     "temperature": config.get("temperature", 0.8),
-                    "created_date": os.path.getctime(config_file),
+                    "created_date": config_file.stat().st_ctime,
                     "normalization_enabled": config.get("normalization_enabled", False),
                     "target_level_db": config.get("target_level_db", -18.0),
                     "normalization_applied": config.get("normalization_applied", False),
@@ -77,41 +100,67 @@ class VoiceManager:
         name: str,
         display_name: Optional[str] = None,
         description: Optional[str] = None,
-        audio_file: str = None,
+        audio_file: Optional[str] = None,
         exaggeration: float = 0.5,
         cfg_weight: float = 0.5,
         temperature: float = 0.8,
         normalization_enabled: bool = False,
         target_level_db: float = -18.0
     ) -> str:
-        """Save a voice profile with reference audio"""
+        """Save a voice profile with reference audio.
+        
+        Args:
+            name: Name/ID for the voice
+            display_name: Display name (defaults to name)
+            description: Optional description
+            audio_file: Path to audio file
+            exaggeration: Voice emotion exaggeration (0-1)
+            cfg_weight: Classifier-free guidance weight (0-1)
+            temperature: Generation temperature (0-1)
+            normalization_enabled: Whether to normalize audio
+            target_level_db: Target audio level in dB
+            
+        Returns:
+            str: Success message
+        """
         if not audio_file:
-            return "Error: No audio file provided"
+            raise ValueError("No audio file provided")
+            
+        # Validate audio file
+        valid, message = self.validate_voice_sample(audio_file)
+        if not valid:
+            raise ValueError(f"Invalid voice sample: {message}")
+            
+        # Create safe name
+        safe_name = self._sanitize_name(name)
+        if not safe_name:
+            raise ValueError("Invalid voice name")
             
         # Create voice directory
-        voice_dir = os.path.join(self.clones_path, name)
-        os.makedirs(voice_dir, exist_ok=True)
+        voice_dir = self.path_manager.get_voice_samples_path() / safe_name
+        voice_dir.mkdir(parents=True, exist_ok=True)
         
         # Copy and process reference audio
-        target_audio = os.path.join(voice_dir, "reference.wav")
+        timestamp = time.strftime("%Y%m%d_%H%M%S")
+        target_audio = voice_dir / f"sample_{timestamp}.wav"
         shutil.copy2(audio_file, target_audio)
         
-        # Create profile
-        profile = VoiceProfile(
-            name=name,
-            display_name=display_name or name,
-            description=description,
-            audio_file=target_audio,
-            exaggeration=exaggeration,
-            cfg_weight=cfg_weight,
-            temperature=temperature,
-            created_date=time.time(),
-            normalization_enabled=normalization_enabled,
-            target_level_db=target_level_db,
-            normalization_applied=False,
-            original_level_info=None,
-            version="2.0"
-        )
+        # Create metadata
+        metadata = {
+            "name": safe_name,
+            "display_name": display_name or name,
+            "description": description or "",
+            "audio_file": str(target_audio),
+            "exaggeration": exaggeration,
+            "cfg_weight": cfg_weight,
+            "temperature": temperature,
+            "created_date": time.time(),
+            "normalization_enabled": normalization_enabled,
+            "target_level_db": target_level_db,
+            "normalization_applied": False,
+            "original_level_info": None,
+            "version": "2.0"
+        }
         
         # Apply normalization if enabled
         if normalization_enabled:
@@ -121,24 +170,24 @@ class VoiceManager:
                 normalized_audio = self.audio_processor.normalize_audio(audio_data, target_level_db)
                 sf.write(target_audio, normalized_audio, sample_rate)
                 
-                profile.normalization_applied = True
-                profile.original_level_info = original_info
+                metadata["normalization_applied"] = True
+                metadata["original_level_info"] = original_info
                 
             except Exception as e:
                 print(f"Warning: Failed to normalize audio: {str(e)}")
         
-        # Save config
-        config_file = os.path.join(voice_dir, "config.json")
-        with open(config_file, 'w') as f:
-            json.dump(profile.dict(), f, indent=2)
+        # Save metadata
+        metadata_path = voice_dir / "metadata.json"
+        with open(metadata_path, "w") as f:
+            json.dump(metadata, f, indent=2)
             
-        return f"Voice profile '{name}' created successfully"
+        return f"Voice sample '{name}' saved successfully"
 
     def delete_voice_profile(self, voice_name: str) -> Tuple[str, List[VoiceProfile]]:
         """Delete a voice profile"""
-        voice_dir = os.path.join(self.clones_path, voice_name)
+        voice_dir = self.path_manager.get_voice_clones_path() / voice_name
         
-        if not os.path.exists(voice_dir):
+        if not voice_dir.exists():
             return f"Voice profile '{voice_name}' not found", self.get_voice_profiles()
             
         try:
@@ -169,6 +218,143 @@ class VoiceManager:
             
         except Exception as e:
             return False, f"Error validating audio file: {str(e)}"
+
+    def get_voice_choices(self) -> List[str]:
+        """Get list of voice names for UI selection"""
+        return [p.display_name for p in self.get_voice_profiles()]
+
+    def get_audiobook_voice_choices(self) -> List[str]:
+        """Get list of voice names suitable for audiobook narration"""
+        return [p.display_name for p in self.get_voice_profiles() 
+                if not p.description or "audiobook" in p.description.lower()]
+
+    def get_voice_config(self, voice_name: str) -> Optional[Dict[str, Any]]:
+        """Get voice configuration for TTS"""
+        profile = self.get_voice_profile(voice_name)
+        if not profile:
+            return None
+        return profile.dict()
+
+    def find_voice_file(self, voice_name: str) -> Optional[str]:
+        """Find reference audio file for a voice"""
+        profile = self.get_voice_profile(voice_name)
+        if not profile or not profile.audio_file:
+            return None
+        return profile.audio_file
+
+    def load_voice_for_tts(self, voice_name: str) -> Tuple[Optional[str], Dict[str, Any]]:
+        """Load voice data and config for TTS generation"""
+        profile = self.get_voice_profile(voice_name)
+        if not profile:
+            return None, {}
+            
+        return profile.audio_file, profile.dict()
+
+    def refresh_voice_list(self) -> List[str]:
+        """Refresh and return list of available voices"""
+        return [p.name for p in self.get_voice_profiles()]
+
+    def create_assignment_interface(self, voice_counts: Dict[str, int]) -> List[Any]:
+        """Create voice assignment interface for UI"""
+        choices = self.get_voice_choices()
+        # Interface creation logic here
+        return []  # TODO: Implement interface creation
+
+    def clone_voice(
+        self,
+        audio_path: str,
+        name: str,
+        description: Optional[str] = None,
+        parameters: Optional[Dict[str, float]] = None
+    ) -> str:
+        """Clone a voice using RunPod.
+        
+        Args:
+            audio_path: Path to reference audio file
+            name: Name for the cloned voice
+            description: Optional description
+            parameters: Optional parameters for voice cloning
+                - exaggeration: Voice emotion exaggeration (0-1)
+                - cfg_weight: Classifier-free guidance weight (0-1)
+                - temperature: Generation temperature (0-1)
+        
+        Returns:
+            str: Success message
+        """
+        if not self.runpod_client:
+            raise ValueError("RunPod not configured. Please set RUNPOD_API_KEY and ENDPOINT_ID")
+            
+        # Validate audio file
+        valid, message = self.validate_voice_sample(audio_path)
+        if not valid:
+            raise ValueError(f"Invalid voice sample: {message}")
+            
+        # Create safe name
+        safe_name = self._sanitize_name(name)
+        if not safe_name:
+            raise ValueError("Invalid voice name")
+            
+        # Create voice directory
+        voice_dir = self.path_manager.get_voice_clones_path() / safe_name
+        voice_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Copy reference audio
+        ref_audio = voice_dir / "reference.wav"
+        shutil.copy2(audio_path, ref_audio)
+        
+        # Prepare RunPod job input
+        job_input = {
+            "voice_name": safe_name,
+            "audio_path": str(ref_audio),
+            "parameters": parameters or {}
+        }
+        
+        try:
+            # Submit cloning job
+            print(f"Submitting voice cloning job for {safe_name}...")
+            result = self.runpod_client.clone_voice(job_input)
+            
+            if not result.success:
+                raise ValueError(f"Voice cloning failed: {result.error}")
+                
+            # Save cloned voice data
+            for filename, data in result.files.items():
+                output_path = voice_dir / filename
+                with open(output_path, "wb") as f:
+                    f.write(data)
+            
+            # Create metadata
+            metadata = {
+                "name": safe_name,
+                "display_name": name,
+                "description": description or "",
+                "reference_audio": str(ref_audio),
+                "created_date": time.time(),
+                "parameters": parameters or {},
+                "version": "2.0"
+            }
+            
+            # Save metadata
+            metadata_path = voice_dir / "metadata.json"
+            with open(metadata_path, "w") as f:
+                json.dump(metadata, f, indent=2)
+                
+            return f"Voice '{name}' cloned successfully"
+            
+        except Exception as e:
+            # Clean up on failure
+            shutil.rmtree(voice_dir)
+            raise ValueError(f"Voice cloning failed: {str(e)}")
+
+    def _sanitize_name(self, name: str) -> str:
+        """Create a safe filename from a display name"""
+        # Remove invalid characters and spaces
+        safe = "".join(c.lower() if c.isalnum() else "_" for c in name)
+        # Remove consecutive underscores
+        while "__" in safe:
+            safe = safe.replace("__", "_")
+        # Remove leading/trailing underscores
+        return safe.strip("_")
 
 
 def get_voice_profiles(voice_library_path: str) -> List[Dict[str, Any]]:

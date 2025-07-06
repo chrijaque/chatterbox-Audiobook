@@ -7,6 +7,26 @@ from pydantic import BaseModel
 from typing import Optional
 import os
 
+# Initialize RunPod client
+def init_runpod():
+    """Initialize RunPod client with credentials"""
+    api_key = os.environ.get("RUNPOD_API_KEY")
+    endpoint_id = os.environ.get("ENDPOINT_ID")
+    
+    if not api_key or not endpoint_id:
+        raise ValueError(
+            "Please set RUNPOD_API_KEY and ENDPOINT_ID environment variables"
+        )
+    
+    runpod.api_key = api_key
+    return endpoint_id
+
+try:
+    ENDPOINT_ID = init_runpod()
+except ValueError as e:
+    print(f"Error initializing RunPod client: {str(e)}")
+    raise
+
 app = FastAPI(title="Chatterbox TTS API")
 
 # Add CORS middleware
@@ -18,17 +38,15 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Initialize RunPod
-RUNPOD_API_KEY = os.environ.get("RUNPOD_API_KEY")
-ENDPOINT_ID = os.environ.get("RUNPOD_ENDPOINT_ID")
-runpod.api_key = RUNPOD_API_KEY
-
 class TTSRequest(BaseModel):
     text: str
     voice_name: Optional[str] = None
+    exaggeration: Optional[float] = 0.5
+    cfg_weight: Optional[float] = 0.5
 
 class VoiceCloneRequest(BaseModel):
     voice_name: str
+    description: Optional[str] = None
 
 @app.post("/api/tts/generate")
 async def generate_tts(request: TTSRequest):
@@ -39,20 +57,28 @@ async def generate_tts(request: TTSRequest):
             input={
                 "type": "tts",
                 "text": request.text,
-                "voice_name": request.voice_name
+                "voice_name": request.voice_name,
+                "exaggeration": request.exaggeration,
+                "cfg_weight": request.cfg_weight
             }
         )
         
         if "error" in response:
             raise HTTPException(status_code=500, detail=response["error"])
             
+        if "audio_data" not in response:
+            raise HTTPException(status_code=500, detail="No audio data in response")
+            
         # Decode base64 audio data
-        audio_data = base64.b64decode(response["audio_data"])
+        try:
+            audio_data = base64.b64decode(response["audio_data"])
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Invalid audio data: {str(e)}")
         
         # Return audio file directly
         return Response(
             content=audio_data,
-            media_type=response["content_type"],
+            media_type=response.get("content_type", "audio/wav"),
             headers={
                 "Content-Disposition": f'attachment; filename="audio.wav"'
             }
@@ -64,21 +90,49 @@ async def generate_tts(request: TTSRequest):
 async def clone_voice(request: VoiceCloneRequest, audio_file: UploadFile = File(...)):
     """Clone a voice from reference audio"""
     try:
+        # Validate audio file
+        if not audio_file.content_type.startswith("audio/"):
+            raise HTTPException(
+                status_code=400,
+                detail="File must be an audio file"
+            )
+        
         # Read and encode audio file
-        audio_data = await audio_file.read()
-        audio_base64 = base64.b64encode(audio_data).decode()
+        try:
+            audio_data = await audio_file.read()
+            audio_base64 = base64.b64encode(audio_data).decode()
+        except Exception as e:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Error reading audio file: {str(e)}"
+            )
         
         response = runpod.run(
             endpoint_id=ENDPOINT_ID,
             input={
                 "type": "clone",
                 "reference_audio": audio_base64,
-                "voice_name": request.voice_name
+                "voice_name": request.voice_name,
+                "description": request.description
             }
         )
+        
+        if "error" in response:
+            raise HTTPException(status_code=500, detail=response["error"])
+            
         return response
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/health")
+async def health_check():
+    """Check if the API is running and RunPod is configured"""
+    return {
+        "status": "healthy",
+        "runpod_configured": bool(ENDPOINT_ID)
+    }
 
 if __name__ == "__main__":
     import uvicorn
