@@ -3,8 +3,8 @@ import base64
 import os
 
 # Initialize RunPod
-RUNPOD_API_KEY = "***REMOVED***"
-ENDPOINT_ID = "ekfmpp6tfjgc4v"  # New endpoint ID
+RUNPOD_API_KEY = os.getenv("RUNPOD_API_KEY")
+ENDPOINT_ID = os.getenv("RUNPOD_ENDPOINT_ID", "ekfmpp6tfjgc4v")  # New endpoint ID
 runpod.api_key = RUNPOD_API_KEY
 
 def test_tts():
