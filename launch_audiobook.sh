@@ -1,54 +1,26 @@
 #!/bin/bash
 
-# Get the directory where the script is located
-SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+# Activate virtual environment if it exists
+if [ -d "venv" ]; then
+    source venv/bin/activate
+fi
 
-# Add src directory to PYTHONPATH
-export PYTHONPATH="$PYTHONPATH:$SCRIPT_DIR/src"
+# Load environment variables from .env file
+if [ -f ".env" ]; then
+    echo "Loading environment variables from .env file..."
+    set -a  # automatically export all variables
+    source .env
+    set +a
+else
+    echo "Warning: .env file not found"
+fi
 
-# Activate virtual environment
-source "$SCRIPT_DIR/venv/bin/activate"
+# Set environment variables for better output
+export PYTHONUNBUFFERED=1
+export GRADIO_SERVER_NAME="127.0.0.1"
+export GRADIO_SERVER_PORT=7860
 
-# Install python-dotenv if not already installed
-pip install python-dotenv >/dev/null 2>&1
-
-# Launch the application with proper environment loading
-python - << EOF
-import os
-from dotenv import load_dotenv
-
-# Load environment variables
-env_path = os.path.join("${SCRIPT_DIR}", ".env")
-if os.path.exists(env_path):
-    print("Loading environment from .env file")
-    load_dotenv(env_path)
-    
-    # Verify environment variables
-    api_key = os.getenv("RUNPOD_API_KEY")
-    endpoint_id = os.getenv("ENDPOINT_ID")
-    print(f"RunPod API Key: {'*' * 8}{api_key[-8:] if api_key else 'Not Set'}")
-    print(f"Endpoint ID: {endpoint_id if endpoint_id else 'Not Set'}")
-
-# Export environment variables to shell environment
-if os.getenv("RUNPOD_API_KEY"):
-    print("export RUNPOD_API_KEY=" + os.getenv("RUNPOD_API_KEY"))
-if os.getenv("ENDPOINT_ID"):
-    print("export ENDPOINT_ID=" + os.getenv("ENDPOINT_ID"))
-EOF
-
-# Evaluate the exports from Python
-eval "$(python - << EOF
-import os
-from dotenv import load_dotenv
-env_path = os.path.join("${SCRIPT_DIR}", ".env")
-if os.path.exists(env_path):
-    load_dotenv(env_path)
-    if os.getenv("RUNPOD_API_KEY"):
-        print("export RUNPOD_API_KEY=" + os.getenv("RUNPOD_API_KEY"))
-    if os.getenv("ENDPOINT_ID"):
-        print("export ENDPOINT_ID=" + os.getenv("ENDPOINT_ID"))
-EOF
-)"
-
-# Launch the application
-python -m audiobook.launcher 
+# Run the application
+echo "🚀 Starting Chatterbox TTS..."
+echo "📍 Server will be available at http://127.0.0.1:7860"
+python -m src.audiobook.launcher --mode ui --host "$GRADIO_SERVER_NAME" --port "$GRADIO_SERVER_PORT" --use-runpod 

@@ -1,6 +1,8 @@
 """Default configuration values for the audiobook application"""
 
 from enum import Enum
+from dataclasses import dataclass
+from typing import Dict, Any
 
 # Text processing
 MAX_WORDS_PER_CHUNK = 50  # Maximum number of words per chunk for TTS
@@ -12,6 +14,17 @@ class TextPreset(str, Enum):
     AUDIOBOOK = "audiobook"  # Optimized for long-form content
     DIALOGUE = "dialogue"    # Optimized for conversations
     NARRATION = "narration" # Optimized for storytelling
+
+@dataclass
+class ProjectPreset:
+    """Project configuration preset"""
+    name: str = "default"
+    description: str = "Default project settings"
+    settings: Dict[str, Any] = None
+    
+    def __post_init__(self):
+        if self.settings is None:
+            self.settings = {}
 
 # Audio processing
 SAMPLE_RATE = 24000  # Hz

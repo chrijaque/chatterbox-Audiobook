@@ -44,11 +44,16 @@ RUN pip3 install --no-cache-dir --upgrade pip setuptools wheel
 # Install runpod and other critical dependencies first
 RUN pip3 install --no-cache-dir runpod==1.3.3 torch==2.4.1 torchaudio==2.4.1
 
+# Install additional required dependencies
+RUN pip3 install --no-cache-dir soundfile numpy librosa transformers
+
 # Install the package in development mode with verbose output
 RUN pip3 install -e . -v
 
 # Final verification of installation
 RUN python3 -c "import runpod; print('RunPod version:', runpod.__version__)"
+RUN python3 -c "import soundfile; print('SoundFile available')"
+RUN python3 -c "import sys; sys.path.insert(0, '/app/src'); from audiobook.config import settings; print('Config loaded')"
 
 # Set the handler as the entrypoint
 CMD ["python3", "/app/handler.py"] 

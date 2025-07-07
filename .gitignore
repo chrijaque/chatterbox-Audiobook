@@ -135,3 +135,61 @@ development/
 .Trashes
 ehthumbs.db
 Thumbs.db
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual Environment
+venv/
+ENV/
+env/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Environment variables
+.env
+.env.*
+
+# Audio files
+*.wav
+*.mp3
+*.ogg
+
+# Temporary files
+temp/
+tmp/
+
+# Logs
+*.log
+
+# Local development
+.DS_Store
+
+# Project-specific
+voice_library/
+audiobook_projects/
+models/
+checkpoints/

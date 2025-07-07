@@ -2,6 +2,7 @@
 
 from .defaults import (
     TextPreset,
+    ProjectPreset,
     MAX_WORDS_PER_CHUNK,
     MAX_CHARS_PER_CHUNK,
     MIN_CHUNK_LENGTH,
@@ -57,6 +58,7 @@ from .settings import (
 __all__ = [
     # From defaults
     "TextPreset",
+    "ProjectPreset",
     "MAX_WORDS_PER_CHUNK",
     "MAX_CHARS_PER_CHUNK",
     "MIN_CHUNK_LENGTH",

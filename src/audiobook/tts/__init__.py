@@ -42,7 +42,7 @@ class AudiobookTTS:
             print("Warning: RunPod requested but not configured. Voice cloning will be disabled.")
             
         self.path_manager = PathManager()
-        self.voice_manager = VoiceManager()
+        self.voice_manager = VoiceManager(voice_library_path=settings.VOICE_LIBRARY_PATH)
         self.audio_processor = AudioProcessor()
         self.text_processor = TextProcessor()
         self.tts_engine = TTSEngine()
@@ -185,7 +185,7 @@ class AudiobookTTS:
         chunks = self.text_processor.process(text)
         
         # Get voice profile
-        voice = self.voice_manager.get_voice_profile(voice_name)
+        voice = self.voice_manager.get_voice_config(voice_name)
         if not voice:
             raise ValueError(f"Voice '{voice_name}' not found")
             
@@ -201,7 +201,8 @@ class AudiobookTTS:
         
     def list_voices(self) -> List[Dict[str, Any]]:
         """List available voices."""
-        return [v.dict() for v in self.voice_manager.get_voice_profiles()]
+        profiles = self.voice_manager.get_profiles()
+        return [{"name": p.voice_name, "description": p.description, "exaggeration": p.exaggeration} for p in profiles]
 
     @staticmethod
     def _sanitize_name(name: str) -> str:

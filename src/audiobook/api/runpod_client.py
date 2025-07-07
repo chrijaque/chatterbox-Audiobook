@@ -6,15 +6,24 @@ import json
 import time
 from typing import Optional, Dict, Any, Tuple
 import requests
-from ..models import RunPodJobInput, RunPodJobOutput
-from dataclasses import dataclass
 import logging
+from dataclasses import dataclass
 
 @dataclass
-class RunPodResponse:
-    success: bool
-    error: Optional[str] = None
-    files: Dict[str, bytes] = None
+class RunPodResult:
+    """RunPod result type."""
+    is_success: bool
+    message: str
+
+    @classmethod
+    def error(cls, message: str) -> 'RunPodResult':
+        """Create an error result."""
+        return cls(is_success=False, message=message)
+
+    @classmethod
+    def success(cls, message: str) -> 'RunPodResult':
+        """Create a success result."""
+        return cls(is_success=True, message=message)
 
 class RunPodClient:
     def __init__(self, api_key: str, endpoint_id: str):
@@ -47,7 +56,7 @@ class RunPodClient:
         display_name: Optional[str] = None,
         description: Optional[str] = None,
         parameters: Optional[Dict[str, float]] = None
-    ) -> Tuple[bool, str]:
+    ) -> RunPodResult:
         """Clone a voice using RunPod's GPU.
         
         Args:
@@ -58,7 +67,7 @@ class RunPodClient:
             parameters: Optional parameters for voice cloning
         
         Returns:
-            Tuple[bool, str]: (success, message)
+            RunPodResult: Result with success status and message
         """
         self.logger.info(f"Starting voice cloning for {voice_name}")
         self.logger.debug(f"Parameters: audio_path={audio_path}, display_name={display_name}, parameters={parameters}")
@@ -72,15 +81,20 @@ class RunPodClient:
             self.logger.debug("Audio file encoded successfully")
             
             # Prepare request data
-            input_data = {
-                "type": "clone",
-                "reference_audio": audio_b64,
-                "voice_name": voice_name,
+            input_params = {
                 "display_name": display_name or voice_name,
                 "description": description or "",
-                "parameters": parameters or {}
+                **(parameters or {})
             }
-            self.logger.debug(f"Prepared request data with keys: {input_data.keys()}")
+            
+            # Create input data
+            input_data: Dict[str, Any] = {
+                "type": "clone",
+                "text": None,
+                "reference_audio": audio_b64,
+                "voice_name": voice_name,
+                "parameters": input_params
+            }
             
             # Submit job with timeout
             self.logger.info("Submitting cloning job to RunPod...")
@@ -94,19 +108,26 @@ class RunPodClient:
                 response.raise_for_status()
             except requests.Timeout:
                 self.logger.error("Timeout while submitting job to RunPod")
-                return False, "Timeout while submitting job to RunPod"
+                return RunPodResult.error("Timeout while submitting job to RunPod")
             except requests.RequestException as e:
                 self.logger.error(f"Error submitting job to RunPod: {str(e)}")
-                return False, f"Error submitting job: {str(e)}"
+                return RunPodResult.error(f"Error submitting job: {str(e)}")
             
-            data = response.json()
-            if "error" in data:
-                error_msg = str(data["error"])
+            # Parse response
+            response_data = response.json()
+            
+            # Check for errors
+            if "error" in response_data:
+                error_msg = str(response_data["error"])
                 self.logger.error(f"Error in RunPod response: {error_msg}")
-                return False, error_msg
+                return RunPodResult.error(error_msg)
             
-            # Get task ID and start polling
-            task_id = data["id"]
+            # Get task ID
+            task_id = response_data.get("id")
+            if not task_id:
+                self.logger.error("No job ID in response")
+                return RunPodResult.error("Invalid response format")
+                
             self.logger.info(f"Job submitted successfully. Task ID: {task_id}")
             
             # Poll for completion with timeout
@@ -117,7 +138,7 @@ class RunPodClient:
             while True:
                 if time.time() - start_time > max_wait_time:
                     self.logger.error("Timeout waiting for voice cloning to complete")
-                    return False, "Voice cloning timed out after 5 minutes"
+                    return RunPodResult.error("Voice cloning timed out after 5 minutes")
                 
                 try:
                     status_response = requests.get(
@@ -126,45 +147,49 @@ class RunPodClient:
                         timeout=10
                     )
                     status_response.raise_for_status()
-                    status_data = status_response.json()
                     
+                    # Parse status response
+                    status_data: Dict[str, Any] = status_response.json()
+                    
+                    # Check for errors
                     if "error" in status_data:
                         error_msg = str(status_data["error"])
                         self.logger.error(f"Error in job status: {error_msg}")
-                        return False, error_msg
+                        return RunPodResult.error(error_msg)
                     
+                    # Check status
                     status = status_data.get("status")
                     self.logger.debug(f"Current status: {status}")
                     
                     if status == "COMPLETED":
                         self.logger.info("Voice cloning completed successfully")
-                        return True, "Voice cloned successfully"
+                        return RunPodResult.success("Voice cloned successfully")
                     elif status == "FAILED":
                         error_msg = status_data.get("error", "Unknown error")
                         self.logger.error(f"Job failed: {error_msg}")
-                        return False, f"Voice cloning failed: {error_msg}"
+                        return RunPodResult.error(f"Voice cloning failed: {error_msg}")
                     elif status == "CANCELLED":
                         self.logger.error("Job was cancelled")
-                        return False, "Voice cloning was cancelled"
+                        return RunPodResult.error("Voice cloning was cancelled")
                     
                 except requests.Timeout:
                     self.logger.warning("Timeout while checking job status, will retry")
                 except requests.RequestException as e:
                     self.logger.error(f"Error checking job status: {str(e)}")
-                    return False, f"Error checking job status: {str(e)}"
+                    return RunPodResult.error(f"Error checking job status: {str(e)}")
                 
                 time.sleep(poll_interval)
             
         except Exception as e:
             self.logger.error(f"Unexpected error during voice cloning: {str(e)}", exc_info=True)
-            return False, f"Unexpected error: {str(e)}"
-    
+            return RunPodResult.error(f"Unexpected error: {str(e)}")
+
     def generate_speech(
         self,
         text: str,
         voice_name: str,
         parameters: Optional[Dict[str, Any]] = None
-    ) -> Tuple[Optional[bytes], str]:
+    ) -> RunPodResult:
         """Generate speech using RunPod's GPU.
         
         Args:
@@ -177,11 +202,96 @@ class RunPodClient:
                 - chunk_size: Number of words per chunk
         
         Returns:
-            Tuple[Optional[bytes], str]: (audio_data, error_message)
+            RunPodResult: Result with success status and message
         """
         try:
             # Prepare request data
-            input_data = {
+            input_data: Dict[str, Any] = {
+                "type": "tts",
+                "text": text,
+                "voice_name": voice_name,
+                "parameters": parameters or {}
+            }
+            
+            # Submit job
+            response = requests.post(
+                f"{self.base_url}/run",
+                headers=self.headers,
+                json={"input": input_data},
+                timeout=30
+            )
+            response.raise_for_status()
+            
+            data = response.json()
+            if "error" in data:
+                error_msg = str(data["error"])
+                return RunPodResult.error(error_msg)
+            
+            task_id = data.get("id")
+            if not task_id:
+                return RunPodResult.error("Invalid response format")
+            
+            # Poll for completion
+            start_time = time.time()
+            max_wait_time = 300  # 5 minutes timeout
+            poll_interval = 2  # Check every 2 seconds
+            
+            while True:
+                if time.time() - start_time > max_wait_time:
+                    return RunPodResult.error("TTS generation timed out")
+                
+                try:
+                    status_response = requests.get(
+                        f"{self.base_url}/status/{task_id}",
+                        headers=self.headers,
+                        timeout=10
+                    )
+                    status_response.raise_for_status()
+                    status_data: Dict[str, Any] = status_response.json()
+                    
+                    if "error" in status_data:
+                        error_msg = str(status_data["error"])
+                        return RunPodResult.error(error_msg)
+                    
+                    status = status_data.get("status")
+                    if status == "COMPLETED":
+                        return RunPodResult.success("TTS generation completed")
+                    elif status == "FAILED":
+                        error_msg = status_data.get("error", "Unknown error")
+                        return RunPodResult.error(f"TTS generation failed: {error_msg}")
+                    elif status == "CANCELLED":
+                        return RunPodResult.error("TTS generation was cancelled")
+                    
+                except requests.RequestException as e:
+                    return RunPodResult.error(f"Error checking status: {str(e)}")
+                
+                time.sleep(poll_interval)
+                
+        except Exception as e:
+            return RunPodResult.error(f"Unexpected error: {str(e)}")
+
+    def get_status(self, task_id: str) -> Dict[str, Any]:
+        """Get the status of a RunPod job."""
+        response = requests.get(
+            f"{self.base_url}/status/{task_id}",
+            headers=self.headers
+        )
+        return response.json()
+
+    def generate_tts(
+        self,
+        text: str,
+        voice_name: str,
+        parameters: Optional[Dict[str, Any]] = None
+    ) -> Tuple[Optional[bytes], str]:
+        """Generate TTS audio using RunPod endpoint - backward compatibility method.
+        
+        Returns:
+            Tuple: (audio_data, error_message)
+        """
+        try:
+            # Prepare request data
+            input_data: Dict[str, Any] = {
                 "type": "tts",
                 "text": text,
                 "voice_name": voice_name,
@@ -201,149 +311,186 @@ class RunPodClient:
             if "error" in data:
                 return None, str(data["error"])
             
+            task_id = data.get("id")
+            if not task_id:
+                return None, "Invalid response format"
+            
             # Poll for completion
-            task_id = data["id"]
+            start_time = time.time()
+            max_wait_time = 300  # 5 minutes timeout
+            poll_interval = 2  # Check every 2 seconds
+            
             while True:
-                status = requests.get(
-                    f"{self.base_url}/status/{task_id}",
-                    headers=self.headers,
-                    timeout=10
-                ).json()
+                if time.time() - start_time > max_wait_time:
+                    return None, "TTS generation timed out"
                 
-                if status["status"] == "COMPLETED":
-                    result = status["output"]
-                    audio_data = base64.b64decode(result["audio_data"])
-                    return audio_data, ""
+                try:
+                    status_response = requests.get(
+                        f"{self.base_url}/status/{task_id}",
+                        headers=self.headers,
+                        timeout=10
+                    )
+                    status_response.raise_for_status()
+                    status_data: Dict[str, Any] = status_response.json()
                     
-                elif status["status"] in ["FAILED", "CANCELLED"]:
-                    return None, status.get("error", "Task failed or was cancelled")
+                    if "error" in status_data:
+                        return None, str(status_data["error"])
                     
-                time.sleep(2)
+                    status = status_data.get("status")
+                    if status == "COMPLETED":
+                        # Get audio data from output
+                        output = status_data.get("output", {})
+                        if "audio_data" in output:
+                            try:
+                                audio_data = base64.b64decode(output["audio_data"])
+                                return audio_data, ""
+                            except Exception as e:
+                                return None, f"Failed to decode audio data: {str(e)}"
+                        else:
+                            return None, "No audio data in response"
+                    elif status == "FAILED":
+                        error_msg = status_data.get("error", "Unknown error")
+                        return None, f"TTS generation failed: {error_msg}"
+                    elif status == "CANCELLED":
+                        return None, "TTS generation was cancelled"
+                    
+                except requests.RequestException as e:
+                    return None, f"Error checking status: {str(e)}"
+                
+                time.sleep(poll_interval)
                 
         except Exception as e:
-            return None, f"Error generating speech: {str(e)}"
+            return None, f"Error generating TTS: {str(e)}"
 
-    def get_status(self, task_id: str) -> Dict[str, Any]:
-        """Get status of a RunPod task.
+    def convert_voice(
+        self,
+        source_audio_path: str,
+        target_voice_name: str,
+        output_name: str
+    ) -> Tuple[Optional[bytes], str]:
+        """Convert source audio to target voice using RunPod's ChatterboxVC.
         
         Args:
-            task_id: RunPod task ID
-            
+            source_audio_path: Path to source audio file to convert
+            target_voice_name: Name of target voice in voice library
+            output_name: Name for the output file
+        
         Returns:
-            Dict with task status information
+            Tuple: (audio_data, error_message)
         """
+        self.logger.info(f"Starting voice conversion: {source_audio_path} -> {target_voice_name}")
+        
         try:
-            response = requests.get(
-                f"{self.base_url}/status/{task_id}",
-                headers=self.headers,
-                timeout=10
-            )
-            response.raise_for_status()
-            return response.json()
+            # Read and encode source audio file
+            self.logger.debug("Reading source audio file...")
+            with open(source_audio_path, 'rb') as f:
+                source_audio_data = f.read()
+            source_audio_b64 = base64.b64encode(source_audio_data).decode()
+            self.logger.debug("Source audio file encoded successfully")
+            
+            # Create input data for voice conversion
+            input_data: Dict[str, Any] = {
+                "type": "voice_convert",
+                "source_audio": source_audio_b64,
+                "target_voice_name": target_voice_name,
+                "output_name": output_name
+            }
+            
+            # Submit job with timeout
+            self.logger.info("Submitting voice conversion job to RunPod...")
+            try:
+                response = requests.post(
+                    f"{self.base_url}/run",
+                    headers=self.headers,
+                    json={"input": input_data},
+                    timeout=30
+                )
+                response.raise_for_status()
+            except requests.Timeout:
+                self.logger.error("Timeout while submitting voice conversion job")
+                return None, "Timeout while submitting job to RunPod"
+            except requests.RequestException as e:
+                self.logger.error(f"Error submitting voice conversion job: {str(e)}")
+                return None, f"Error submitting job: {str(e)}"
+            
+            # Parse response
+            response_data = response.json()
+            
+            # Check for errors
+            if "error" in response_data:
+                error_msg = str(response_data["error"])
+                self.logger.error(f"Error in RunPod response: {error_msg}")
+                return None, error_msg
+            
+            # Get task ID
+            task_id = response_data.get("id")
+            if not task_id:
+                self.logger.error("No job ID in response")
+                return None, "Invalid response format"
+                
+            self.logger.info(f"Voice conversion job submitted. Task ID: {task_id}")
+            
+            # Poll for completion with timeout
+            start_time = time.time()
+            max_wait_time = 600  # 10 minutes timeout for voice conversion
+            poll_interval = 5  # Check every 5 seconds
+            
+            while True:
+                if time.time() - start_time > max_wait_time:
+                    self.logger.error("Timeout waiting for voice conversion to complete")
+                    return None, "Voice conversion timed out after 10 minutes"
+                
+                try:
+                    status_response = requests.get(
+                        f"{self.base_url}/status/{task_id}",
+                        headers=self.headers,
+                        timeout=10
+                    )
+                    status_response.raise_for_status()
+                    
+                    # Parse status response
+                    status_data: Dict[str, Any] = status_response.json()
+                    
+                    # Check for errors
+                    if "error" in status_data:
+                        error_msg = str(status_data["error"])
+                        self.logger.error(f"Error in job status: {error_msg}")
+                        return None, error_msg
+                    
+                    # Check status
+                    status = status_data.get("status")
+                    self.logger.debug(f"Current status: {status}")
+                    
+                    if status == "COMPLETED":
+                        self.logger.info("Voice conversion completed successfully")
+                        # Get audio data from output
+                        output = status_data.get("output", {})
+                        if "audio_data" in output:
+                            try:
+                                audio_data = base64.b64decode(output["audio_data"])
+                                return audio_data, ""
+                            except Exception as e:
+                                return None, f"Failed to decode audio data: {str(e)}"
+                        else:
+                            return None, "No audio data in response"
+                    elif status == "FAILED":
+                        error_msg = status_data.get("error", "Unknown error")
+                        self.logger.error(f"Job failed: {error_msg}")
+                        return None, f"Voice conversion failed: {error_msg}"
+                    elif status == "CANCELLED":
+                        self.logger.error("Job was cancelled")
+                        return None, "Voice conversion was cancelled"
+                    
+                except requests.Timeout:
+                    self.logger.warning("Timeout while checking job status, will retry")
+                except requests.RequestException as e:
+                    self.logger.error(f"Error checking job status: {str(e)}")
+                    return None, f"Error checking job status: {str(e)}"
+                
+                time.sleep(poll_interval)
+            
         except Exception as e:
-            return {"status": "ERROR", "error": str(e)}
+            self.logger.error(f"Unexpected error during voice conversion: {str(e)}", exc_info=True)
+            return None, f"Unexpected error: {str(e)}"
 
-    def _make_request(self, method: str, path: str, data: Optional[Dict] = None) -> Dict:
-        """Make HTTP request to RunPod API"""
-        url = f"{self.base_url}/{path}"
-        headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json"
-        }
-        
-        response = requests.request(
-            method,
-            url,
-            headers=headers,
-            json=data
-        )
-        
-        try:
-            return response.json()
-        except:
-            return {"error": response.text}
-            
-    def run_inference(self, job_input: RunPodJobInput, timeout: int = 300) -> RunPodJobOutput:
-        """Run inference job and wait for completion"""
-        # Submit job
-        response = self._make_request(
-            "POST",
-            f"{self.endpoint_id}/run",
-            data={"input": job_input.dict()}
-        )
-        
-        if "error" in response:
-            return RunPodJobOutput(
-                success=False,
-                message="Failed to submit job",
-                error=str(response["error"])
-            )
-            
-        job_id = response.get("id")
-        if not job_id:
-            return RunPodJobOutput(
-                success=False,
-                message="No job ID in response",
-                error="Invalid response format"
-            )
-            
-        # Poll for completion
-        start_time = time.time()
-        while time.time() - start_time < timeout:
-            status = self._make_request("GET", f"{self.endpoint_id}/status/{job_id}")
-            
-            if "error" in status:
-                return RunPodJobOutput(
-                    success=False,
-                    message="Failed to check job status",
-                    error=str(status["error"])
-                )
-                
-            if status.get("status") == "COMPLETED":
-                output = status.get("output", {})
-                return RunPodJobOutput(
-                    success=True,
-                    message="Job completed successfully",
-                    audio_data=output.get("audio_data"),
-                    content_type=output.get("content_type")
-                )
-                
-            if status.get("status") == "FAILED":
-                return RunPodJobOutput(
-                    success=False,
-                    message="Job failed",
-                    error=status.get("error", "Unknown error")
-                )
-                
-            time.sleep(1)
-            
-        return RunPodJobOutput(
-            success=False,
-            message="Job timed out",
-            error=f"Job did not complete within {timeout} seconds"
-        )
-        
-    def generate_tts(
-        self,
-        text: str,
-        voice_name: str,
-        parameters: Optional[Dict[str, Any]] = None
-    ) -> Tuple[Optional[bytes], Optional[str], str]:
-        """Generate TTS audio using RunPod endpoint"""
-        job_input = RunPodJobInput(
-            type="tts",
-            text=text,
-            voice_name=voice_name,
-            parameters=parameters or {}
-        )
-        
-        result = self.run_inference(job_input)
-        
-        if not result.success:
-            return None, None, result.error or result.message
-            
-        try:
-            audio_data = base64.b64decode(result.audio_data)
-            return audio_data, result.content_type, "Success"
-        except Exception as e:
-            return None, None, f"Failed to decode audio data: {str(e)}" 
+ 

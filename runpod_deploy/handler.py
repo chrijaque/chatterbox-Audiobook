@@ -1,182 +1,263 @@
 import runpod
 import torch
 import base64
-import io
+import numpy as np
+import os
 import json
 import tempfile
-import os
+import soundfile as sf
+import torchaudio as ta
 from pathlib import Path
-from audiobook.tts.engine import TTSEngine
-from audiobook.tts.text_processor import chunk_text_by_sentences
+
+# Optional Firebase imports
+try:
+    import firebase_admin
+    from firebase_admin import credentials, storage
+    FIREBASE_AVAILABLE = True
+except ImportError:
+    print("Firebase not available - continuing without Firebase support")
+    FIREBASE_AVAILABLE = False
+
+# Add src directory to path
+import sys
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
+
+from audiobook.tts import TTSEngine
 from audiobook.voice_management import VoiceManager
-from audiobook.config.paths import PathManager
-import logging
-from typing import Dict, Any
+from audiobook.config import settings
 
-# Global variables to cache components
-tts_engine = None
-voice_manager = None
-path_manager = None
+# Import ChatterboxVC for voice conversion
+try:
+    from chatterbox.vc import ChatterboxVC
+    VOICE_CONVERSION_AVAILABLE = True
+    print("ChatterboxVC available for voice conversion")
+except ImportError:
+    VOICE_CONVERSION_AVAILABLE = False
+    print("Warning: ChatterboxVC not available. Voice conversion disabled.")
 
-# Configure logging
-logger = logging.getLogger("RunPodHandler")
-logger.setLevel(logging.DEBUG)
-if not logger.handlers:
-    handler = logging.StreamHandler()
-    handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
-    logger.addHandler(handler)
+# Initialize components
+tts_engine = TTSEngine()  # Direct TTSEngine instance
+voice_manager = VoiceManager(voice_library_path=settings.VOICE_LIBRARY_PATH)
 
-def initialize_components():
-    """Initialize the TTS engine and voice manager if not already loaded"""
-    global tts_engine, voice_manager, path_manager
-    if tts_engine is None:
-        device = "cuda" if torch.cuda.is_available() else "cpu"
-        tts_engine = TTSEngine(device=device)
-        path_manager = PathManager()
+# Initialize Firebase if available and credentials exist
+bucket = None
+if FIREBASE_AVAILABLE and os.path.exists("firebase-credentials.json"):
+    try:
+        cred = credentials.Certificate("firebase-credentials.json")
+        firebase_admin.initialize_app(cred, {
+            'storageBucket': os.getenv('FIREBASE_STORAGE_BUCKET')
+        })
+        bucket = storage.bucket()
+        print("Firebase initialized successfully")
+    except Exception as e:
+        print(f"Firebase initialization failed: {e}")
+        bucket = None
+else:
+    print("Firebase not available or credentials not found")
+
+def handler(event):
+    """Handle RunPod serverless requests."""
+    try:
+        # Extract parameters
+        input_data = event["input"]
+        request_type = input_data.get("type", "tts")
         
-        # Set up voice library paths
-        voice_library = path_manager.voice_library_dir
-        voice_library.mkdir(parents=True, exist_ok=True)
-        (voice_library / "clones").mkdir(exist_ok=True)
-        (voice_library / "output").mkdir(exist_ok=True)
-        (voice_library / "samples").mkdir(exist_ok=True)
-        
-        voice_manager = VoiceManager(voice_library)
-    return tts_engine, voice_manager, path_manager
+        if request_type == "tts":
+            return handle_tts_request(input_data)
+        elif request_type == "voice_clone":
+            return handle_voice_clone_request(input_data)
+        elif request_type == "voice_convert":
+            return handle_voice_conversion_request(input_data)
+        else:
+            return {"error": f"Unknown request type: {request_type}"}
+            
+    except Exception as e:
+        return {"error": str(e), "success": False}
 
-def generate_tts(job):
-    """Generate TTS audio from text"""
-    input_data = job["input"]
+def handle_tts_request(input_data):
+    """Handle TTS generation request."""
+    text = input_data.get("text", "")
+    voice_name = input_data.get("voice_name", "")
     
-    # Initialize components
-    engine, voice_mgr, paths = initialize_components()
-    
-    # Extract parameters
-    text = input_data["text"]
-    voice_name = input_data.get("voice_name")
-    params = input_data.get("parameters", {})
+    if not text:
+        return {"error": "Text is required", "success": False}
     
     # Load voice profile
-    audio_file, exaggeration, cfg_weight, temperature, message = voice_mgr.load_voice_profile(voice_name)
-    if audio_file is None:
-        raise ValueError(message)
+    audio_file, voice_profile = voice_manager.load_voice_for_tts(voice_name)
+    if not audio_file:
+        return {"error": f"Voice file not found for {voice_name}", "success": False}
     
-    # Generate audio chunks
-    audio_chunks = engine.generate_tts(
-        text,
-        audio_file,
-        chunk_size=50,  # Default chunk size
-        exaggeration=exaggeration,
-        temperature=temperature,
-        cfg_weight=cfg_weight
+    # Ensure model is loaded
+    tts_engine.load_model()
+    
+    # Generate audio with retry and CPU fallback
+    wav, device_used = tts_engine.generate_with_retry(
+        text=text,
+        audio_prompt_path=audio_file,
+        exaggeration=voice_profile.exaggeration,
+        temperature=voice_profile.temperature,
+        cfg_weight=voice_profile.cfg_weight
     )
     
-    # Combine chunks
-    final_audio = engine.audio_processor.combine_audio_chunks(audio_chunks)
+    # Save to temporary file
+    temp_dir = tempfile.mkdtemp()
+    output_path = os.path.join(temp_dir, "output.wav")
+    sf.write(output_path, wav, tts_engine.sample_rate)
     
-    # Save to output directory with unique name
-    output_path = paths.get_tts_output_path() / f"{voice_name}_{hash(text)[:8]}.wav"
-    engine.audio_processor.save_audio_chunks([final_audio], output_path)
+    # Convert to base64 for response
+    with open(output_path, "rb") as f:
+        audio_data = base64.b64encode(f.read()).decode()
     
-    # Read the saved file and convert to base64
-    with open(output_path, 'rb') as f:
-        audio_data = f.read()
-    audio_base64 = base64.b64encode(audio_data).decode()
+    # Clean up
+    os.remove(output_path)
+    os.rmdir(temp_dir)
     
     return {
-        "audio_data": audio_base64,
-        "content_type": "audio/wav"
+        "audio_data": audio_data,
+        "sample_rate": tts_engine.sample_rate,
+        "device_used": device_used,
+        "success": True
     }
 
-def clone_voice(job):
-    """Clone a voice from reference audio"""
-    input_data = job["input"]
-    logger.info("Starting voice cloning process")
-    logger.debug(f"Job input: {input_data.keys()}")
+def handle_voice_clone_request(input_data):
+    """Handle voice cloning request."""
+    voice_name = input_data.get("voice_name", "")
+    audio_data_b64 = input_data.get("audio_data", "")
+    description = input_data.get("description", "")
+    exaggeration = input_data.get("exaggeration", 0.5)
+    cfg_weight = input_data.get("cfg_weight", 0.5)
+    temperature = input_data.get("temperature", 0.8)
+    
+    if not voice_name:
+        return {"error": "Voice name is required", "success": False}
+    if not audio_data_b64:
+        return {"error": "Audio data is required", "success": False}
     
     try:
-        # Initialize components
-        logger.debug("Initializing components...")
-        _, voice_mgr, paths = initialize_components()
-        logger.info("Components initialized successfully")
+        # Decode audio data
+        audio_data = base64.b64decode(audio_data_b64)
         
-        # Extract parameters
-        logger.debug("Extracting parameters from job input...")
-        reference_audio = base64.b64decode(input_data["reference_audio"])
-        voice_name = input_data["voice_name"]
-        display_name = input_data.get("display_name", voice_name)
-        description = input_data.get("description", "")
-        parameters = input_data.get("parameters", {})
+        # Save voice profile
+        voice_manager.save_profile(
+            voice_name=voice_name,
+            audio_data=audio_data,
+            display_name=voice_name,
+            description=description,
+            exaggeration=exaggeration,
+            cfg_weight=cfg_weight,
+            temperature=temperature
+        )
         
-        logger.info(f"Processing voice clone request for: {voice_name}")
-        logger.debug(f"Parameters: display_name={display_name}, parameters={parameters}")
+        return {
+            "message": f"Voice '{voice_name}' cloned successfully",
+            "success": True
+        }
         
-        # Save reference audio temporarily
-        logger.debug("Saving reference audio to temporary file...")
-        with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as temp_file:
-            temp_file.write(reference_audio)
-            temp_path = temp_file.name
-            logger.debug(f"Audio saved to: {temp_path}")
-        
-        try:
-            # Validate audio sample
-            logger.debug("Validating audio sample...")
-            is_valid, message = voice_mgr.validate_voice_sample(temp_path)
-            if not is_valid:
-                logger.error(f"Audio validation failed: {message}")
-                raise ValueError(message)
-            logger.info("Audio sample validated successfully")
-            
-            # Save voice profile
-            logger.debug("Saving voice profile...")
-            result = voice_mgr.save_voice_profile(
-                voice_name,
-                display_name,
-                description,
-                temp_path,
-                parameters=parameters
-            )
-            success = True
-            message = result
-            logger.info(f"Voice profile saved successfully: {message}")
-            
-        except Exception as e:
-            logger.error(f"Error during voice cloning: {str(e)}", exc_info=True)
-            success = False
-            message = str(e)
-            raise
-        
-        finally:
-            # Clean up temporary file
-            logger.debug("Cleaning up temporary files...")
-            try:
-                os.unlink(temp_path)
-                logger.debug("Temporary files cleaned up successfully")
-            except Exception as e:
-                logger.warning(f"Error cleaning up temporary file: {str(e)}")
-    
     except Exception as e:
-        logger.error(f"Voice cloning failed: {str(e)}", exc_info=True)
-        return {"success": False, "message": str(e)}
-    
-    return {"success": success, "message": message}
+        return {"error": f"Failed to clone voice: {str(e)}", "success": False}
 
-def handler(job):
-    """Main handler for RunPod requests"""
-    job_type = job["input"]["type"]
-    logger.info(f"Received job of type: {job_type}")
+def handle_voice_conversion_request(input_data):
+    """Handle voice conversion request using ChatterboxVC."""
+    if not VOICE_CONVERSION_AVAILABLE:
+        return {"error": "Voice conversion not available - ChatterboxVC not installed", "success": False}
+    
+    source_audio_b64 = input_data.get("source_audio", "")
+    target_voice_name = input_data.get("target_voice_name", "")
+    output_name = input_data.get("output_name", "converted_audio")
+    
+    if not source_audio_b64:
+        return {"error": "Source audio data is required", "success": False}
+    if not target_voice_name:
+        return {"error": "Target voice name is required", "success": False}
     
     try:
-        if job_type == "tts":
-            return generate_tts(job)
-        elif job_type == "clone":
-            return clone_voice(job)
+        # Auto-detect device
+        if torch.cuda.is_available():
+            device = "cuda"
+        elif torch.backends.mps.is_available():
+            device = "mps"
         else:
-            error_msg = f"Unknown job type: {job_type}"
-            logger.error(error_msg)
-            raise ValueError(error_msg)
+            device = "cpu"
+        
+        print(f"Using device for voice conversion: {device}")
+        
+        # Create temporary files for processing
+        temp_dir = tempfile.mkdtemp()
+        source_audio_path = os.path.join(temp_dir, "source_audio.wav")
+        
+        # Decode and save source audio
+        source_audio_data = base64.b64decode(source_audio_b64)
+        with open(source_audio_path, "wb") as f:
+            f.write(source_audio_data)
+        
+        # Find target voice file
+        target_voice_path = voice_manager.find_voice_file(target_voice_name)
+        if not target_voice_path:
+            return {"error": f"Target voice file not found for: {target_voice_name}", "success": False}
+        
+        # Initialize ChatterboxVC model
+        print("Loading ChatterboxVC model...")
+        vc_model = ChatterboxVC.from_pretrained(device)
+        
+        # Perform voice conversion
+        print(f"Converting {source_audio_path} to sound like {target_voice_name}")
+        converted_wav = vc_model.generate(
+            audio=source_audio_path,
+            target_voice_path=target_voice_path
+        )
+        
+        # Save converted audio to temporary file
+        output_path = os.path.join(temp_dir, f"{output_name}.wav")
+        ta.save(output_path, converted_wav, vc_model.sr)
+        
+        # Convert to base64 for response
+        with open(output_path, "rb") as f:
+            converted_audio_b64 = base64.b64encode(f.read()).decode()
+        
+        # Clean up temporary files
+        os.remove(source_audio_path)
+        os.remove(output_path)
+        os.rmdir(temp_dir)
+        
+        return {
+            "audio_data": converted_audio_b64,
+            "sample_rate": vc_model.sr,
+            "message": f"Voice conversion completed: {output_name}",
+            "success": True
+        }
+        
     except Exception as e:
-        logger.error(f"Error processing job: {str(e)}", exc_info=True)
-        return {"error": str(e)}
+        # Clean up on error
+        try:
+            if 'temp_dir' in locals() and os.path.exists(temp_dir):
+                import shutil
+                shutil.rmtree(temp_dir)
+        except:
+            pass
+        
+        print(f"Voice conversion error: {str(e)}")
+        return {"error": f"Failed to convert voice: {str(e)}", "success": False}
 
-runpod.serverless.start({"handler": handler}) 
+if __name__ == "__main__":
+    print("🚀 Starting RunPod handler...")
+    print(f"📁 Voice library path: {settings.VOICE_LIBRARY_PATH}")
+    print(f"🔥 Firebase available: {FIREBASE_AVAILABLE}")
+    
+    # Initialize components to verify everything works
+    try:
+        print("🔧 Initializing TTS engine...")
+        tts_engine.load_model()
+        print("✅ TTS engine initialized successfully")
+    except Exception as e:
+        print(f"⚠️ TTS engine initialization warning: {e}")
+    
+    try:
+        print("🎤 Testing voice manager...")
+        profiles = voice_manager.get_profiles()
+        print(f"✅ Voice manager working - found {len(profiles)} profiles")
+    except Exception as e:
+        print(f"⚠️ Voice manager warning: {e}")
+    
+    print("🌐 Starting RunPod serverless handler...")
+    print("⏳ Waiting for requests...")
+    runpod.serverless.start({"handler": handler}) 

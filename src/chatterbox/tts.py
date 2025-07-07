@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Optional
 
 import librosa
 import torch
@@ -44,10 +45,10 @@ def punc_norm(text: str) -> str:
         ("—", "-"),
         ("–", "-"),
         (" ,", ","),
-        ("“", "\""),
-        ("”", "\""),
-        ("‘", "'"),
-        ("’", "'"),
+        (""", "\""),
+        (""", "\""),
+        ("'", "'"),
+        ("'", "'"),
     ]
     for old_char_sequence, new_char in punc_to_replace:
         text = text.replace(old_char_sequence, new_char)
@@ -114,7 +115,7 @@ class ChatterboxTTS:
         ve: VoiceEncoder,
         tokenizer: EnTokenizer,
         device: str,
-        conds: Conditionals = None,
+        conds: Optional[Conditionals] = None,
     ):
         self.sr = S3GEN_SR  # sample rate of synthesized audio
         self.t3 = t3
@@ -145,7 +146,8 @@ class ChatterboxTTS:
         t3_state = load_file(ckpt_dir / "t3_cfg.safetensors")
         if "model" in t3_state.keys():
             t3_state = t3_state["model"][0]
-        t3.load_state_dict(t3_state)
+        if isinstance(t3_state, dict):
+            t3.load_state_dict(t3_state)
         t3.to(device).eval()
 
         s3gen = S3Gen()
@@ -160,7 +162,7 @@ class ChatterboxTTS:
 
         conds = None
         if (builtin_voice := ckpt_dir / "conds.pt").exists():
-            conds = Conditionals.load(builtin_voice, map_location=map_location).to(device)
+            conds = Conditionals.load(builtin_voice, map_location=str(map_location) if map_location else "cpu").to(device)
 
         return cls(t3, s3gen, ve, tokenizer, device, conds=conds)
 
@@ -186,17 +188,18 @@ class ChatterboxTTS:
         ref_16k_wav = librosa.resample(s3gen_ref_wav, orig_sr=S3GEN_SR, target_sr=S3_SR)
 
         s3gen_ref_wav = s3gen_ref_wav[:self.DEC_COND_LEN]
-        s3gen_ref_dict = self.s3gen.embed_ref(s3gen_ref_wav, S3GEN_SR, device=self.device)
+        s3gen_ref_dict = self.s3gen.embed_ref(torch.from_numpy(s3gen_ref_wav), ref_sr=S3GEN_SR, device=self.device)
 
         # Speech cond prompt tokens
+        t3_cond_prompt_tokens = None
         if plen := self.t3.hp.speech_cond_prompt_len:
             s3_tokzr = self.s3gen.tokenizer
-            t3_cond_prompt_tokens, _ = s3_tokzr.forward([ref_16k_wav[:self.ENC_COND_LEN]], max_len=plen)
+            t3_cond_prompt_tokens, _ = s3_tokzr.forward(torch.from_numpy(ref_16k_wav[:self.ENC_COND_LEN]), max_len=plen)
             t3_cond_prompt_tokens = torch.atleast_2d(t3_cond_prompt_tokens).to(self.device)
 
         # Voice-encoder speaker embedding
         ve_embed = torch.from_numpy(self.ve.embeds_from_wavs([ref_16k_wav], sample_rate=S3_SR))
-        ve_embed = ve_embed.mean(axis=0, keepdim=True).to(self.device)
+        ve_embed = ve_embed.mean(dim=0, keepdim=True).to(self.device)
 
         t3_cond = T3Cond(
             speaker_emb=ve_embed,
@@ -218,17 +221,24 @@ class ChatterboxTTS:
     ):
         if audio_prompt_path:
             self.prepare_conditionals(audio_prompt_path, exaggeration=exaggeration)
-        else:
-            assert self.conds is not None, "Please `prepare_conditionals` first or specify `audio_prompt_path`"
+        
+        # Check that conds is not None after potential preparation
+        if self.conds is None:
+            raise ValueError("Please `prepare_conditionals` first or specify `audio_prompt_path`")
+
+        # Explicit assignment for type narrowing
+        conds: Conditionals = self.conds
 
         # Update exaggeration if needed
-        if exaggeration != self.conds.t3.emotion_adv[0, 0, 0]:
-            _cond: T3Cond = self.conds.t3
-            self.conds.t3 = T3Cond(
+        if exaggeration != conds.t3.emotion_adv[0, 0, 0]:  # type: ignore
+            _cond: T3Cond = conds.t3
+            conds.t3 = T3Cond(
                 speaker_emb=_cond.speaker_emb,
                 cond_prompt_speech_tokens=_cond.cond_prompt_speech_tokens,
                 emotion_adv=exaggeration * torch.ones(1, 1, 1),
             ).to(device=self.device)
+            # Update the instance variable too
+            self.conds = conds
 
         # Norm and tokenize text
         text = punc_norm(text)
@@ -244,11 +254,11 @@ class ChatterboxTTS:
 
         with torch.inference_mode():
             speech_tokens = self.t3.inference(
-                t3_cond=self.conds.t3,
+                t3_cond=conds.t3,
                 text_tokens=text_tokens,
                 max_new_tokens=1000,  # TODO: use the value in config
                 temperature=temperature,
-                cfg_weight=cfg_weight,
+                cfg_weight=int(cfg_weight),
                 repetition_penalty=repetition_penalty,
                 min_p=min_p,
                 top_p=top_p,
@@ -265,7 +275,7 @@ class ChatterboxTTS:
 
             wav, _ = self.s3gen.inference(
                 speech_tokens=speech_tokens,
-                ref_dict=self.conds.gen,
+                ref_dict=conds.gen,
             )
             wav = wav.squeeze(0).detach().cpu().numpy()
             watermarked_wav = self.watermarker.apply_watermark(wav, sample_rate=self.sr)

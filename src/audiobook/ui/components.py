@@ -23,7 +23,6 @@ def create_audio_input(
 ) -> gr.Audio:
     """Create an audio input component with consistent styling."""
     return gr.Audio(
-        sources=["upload", "microphone"],
         type="filepath",
         label=label,
         value=None,

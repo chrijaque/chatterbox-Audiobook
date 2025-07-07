@@ -1,147 +1,104 @@
-"""Launcher module for the audiobook application."""
+"""Application launcher module."""
 
-import os
-import sys
-import warnings
+import argparse
 import uvicorn
+from typing import Optional
+from pathlib import Path
+from .ui.app import create_ui
+from .api.endpoints import create_api
+from .tts import AudiobookTTS
+from .config.settings import RUNPOD_API_KEY, ENDPOINT_ID  # Import directly from settings
 import gradio as gr
-from multiprocessing import Process
-from audiobook.voice_management import VoiceManager
-from audiobook.api.runpod_client import RunPodClient
-from audiobook.tts.engine import TTSEngine
-from audiobook.ui.app import create_ui
-from audiobook.tts import AudiobookTTS
-from dotenv import load_dotenv
 
-# Filter deprecation warning from perth package
-warnings.filterwarnings("ignore", category=UserWarning, module="pkg_resources")
-
-def launch_api_server(
-    host: str = "localhost",
-    port: int = 8000,
-    reload: bool = True
+def launch_app(
+    mode: str = "ui",
+    host: Optional[str] = None,
+    port: Optional[int] = None,
+    use_runpod: Optional[bool] = None,
+    **kwargs
 ):
-    """Launch the FastAPI server."""
-    # Detach from parent process stdin
-    if os.name != 'nt':  # Not on Windows
-        try:
-            sys.stdin = open('/dev/null')
-        except:
-            pass  # Ignore if /dev/null is not available
+    """Launch the Chatterbox application in either UI or API mode.
     
-    uvicorn.run(
-        "audiobook.api.endpoints:app",
-        host=host,
-        port=port,
-        reload=reload,
-        reload_includes=['*.py'],  # Only watch Python files
-        reload_excludes=['.*', '*.pyc', '__pycache__'],  # Exclude cache files
-        log_level="info"
-    )
-
-def launch_ui(
-    runpod_api_key: str,
-    runpod_endpoint_id: str,
-    voice_library_path: str = "voice_library",
-    share: bool = False,
-    server_name: str = "localhost",
-    server_port: int = 7860,
-):
-    """Launch the Gradio UI for voice cloning and TTS"""
+    Args:
+        mode: Either "ui" or "api"
+        host: Host to bind to (overrides environment variable)
+        port: Port to bind to (overrides environment variable)
+        use_runpod: Whether to use RunPod for inference (overrides settings)
+        **kwargs: Additional keyword arguments passed to the app
+    """
+    # Create voice library directories
+    voice_library = Path("voice_library")
+    (voice_library / "samples").mkdir(parents=True, exist_ok=True)
+    (voice_library / "clones").mkdir(parents=True, exist_ok=True)
+    (voice_library / "output").mkdir(parents=True, exist_ok=True)
     
-    # Initialize components
-    runpod_client = RunPodClient(runpod_api_key, runpod_endpoint_id)
-    tts_engine = AudiobookTTS(use_runpod=True)
+    # Use provided host/port or fall back to settings
+    host = host or "127.0.0.1"
+    port = port or 7860
     
-    # Create and launch UI
-    app = create_ui(tts_engine)
-    app.launch(
-        share=share,
-        server_name=server_name,
-        server_port=server_port,
-        show_error=True  # Show detailed error messages
-    )
-
-def launch_development_servers(
-    api_host: str = "localhost",
-    api_port: int = 8000,
-    ui_host: str = "localhost",
-    ui_port: int = 7860,
-):
-    """Launch both API and UI servers for development."""
+    # Check RunPod configuration
+    if use_runpod is None:
+        use_runpod = bool(RUNPOD_API_KEY and ENDPOINT_ID)
     
-    # Load environment variables from .env file
-    env_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), ".env")
-    if os.path.exists(env_path):
-        load_dotenv(env_path)
+    if use_runpod:
+        if not (RUNPOD_API_KEY and ENDPOINT_ID):
+            raise ValueError("RunPod not configured. Please check your .env file has RUNPOD_API_KEY and RUNPOD_ENDPOINT_ID set.")
+        print("Initializing TTS engine with RunPod")
+        if RUNPOD_API_KEY:
+            print(f"RunPod API Key: {RUNPOD_API_KEY[:8]}...")
+        if ENDPOINT_ID:
+            print(f"RunPod Endpoint ID: {ENDPOINT_ID}")
+    else:
+        print("Using local TTS engine")
     
-    # Get RunPod credentials from environment
-    api_key, endpoint_id = check_runpod_config()
+    # Initialize TTS engine with RunPod configuration
+    tts_engine = AudiobookTTS()
+    if use_runpod and RUNPOD_API_KEY and ENDPOINT_ID:
+        print("Enabling RunPod for TTS engine")
+        tts_engine.use_runpod = True
+        if hasattr(tts_engine, 'endpoint_id'):
+            tts_engine.endpoint_id = ENDPOINT_ID
     
-    # Add src directory to Python path
-    src_dir = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
-    if src_dir not in sys.path:
-        sys.path.insert(0, src_dir)
-    
-    print("\nStarting development servers...")
-    print(f"Added {src_dir} to PYTHONPATH")
-    print(f"RunPod API Key: {'*' * 8}{api_key[-8:]}")
-    print(f"RunPod Endpoint ID: {endpoint_id}")
-    
-    # Start API server in a separate process
-    print("\nStarting API server...")
-    api_process = Process(
-        target=launch_api_server,
-        args=(api_host, api_port, True)
-    )
-    api_process.start()
-    
-    # Start UI server in main process
-    print("\nStarting UI server...")
-    try:
-        launch_ui(
-            api_key,
-            endpoint_id,
-            server_name=ui_host,
-            server_port=ui_port
+    if mode == "ui":
+        # Create UI with improved configuration
+        app = create_ui(tts_engine)
+        app.launch(
+            server_name=host,
+            server_port=port,
+            share=kwargs.get('share', False),
+            show_error=True,
+            quiet=False,
+            favicon_path=None
         )
-    except Exception as e:
-        print(f"\nError starting UI server: {str(e)}")
-        api_process.terminate()
-        api_process.join()
-        raise
-    
-    print("\nDevelopment servers running:")
-    print(f"  API: http://{api_host}:{api_port}")
-    print(f"  UI:  http://{ui_host}:{ui_port}")
-    print("\nPress Ctrl+C to stop")
-    
-    try:
-        api_process.join()
-    except KeyboardInterrupt:
-        print("\nShutting down servers...")
-        api_process.terminate()
-        api_process.join()
-        sys.exit(0)
+    elif mode == "api":
+        app = create_api(tts_engine=tts_engine)
+        uvicorn.run(
+            app,
+            host=host,
+            port=port,
+            **kwargs
+        )
+    else:
+        raise ValueError(f"Invalid mode: {mode}")
 
-def check_runpod_config():
-    """Check if RunPod is properly configured"""
-    api_key = os.getenv("RUNPOD_API_KEY")
-    endpoint_id = os.getenv("RUNPOD_ENDPOINT_ID")
+def main():
+    """Main entry point."""
+    parser = argparse.ArgumentParser(description="Launch Chatterbox TTS")
+    parser.add_argument("--mode", choices=["ui", "api"], default="ui", help="Launch mode")
+    parser.add_argument("--host", help="Host to bind to")
+    parser.add_argument("--port", type=int, help="Port to bind to")
+    parser.add_argument("--share", action="store_true", help="Enable sharing")
+    parser.add_argument("--use-runpod", action="store_true", help="Use RunPod for inference")
     
-    if not api_key or not endpoint_id:
-        print("\nRunPod Configuration Status:")
-        print(f"RUNPOD_API_KEY: {'Set' if api_key else 'Not Set'}")
-        print(f"RUNPOD_ENDPOINT_ID: {endpoint_id if endpoint_id else 'Not Set'}")
-        print("\nPlease set the following environment variables:")
-        print("export RUNPOD_API_KEY=your_api_key_here")
-        print("export RUNPOD_ENDPOINT_ID=your_endpoint_id_here")
-        raise ValueError("Missing RunPod configuration. Please set RUNPOD_API_KEY and RUNPOD_ENDPOINT_ID environment variables.")
+    args = parser.parse_args()
     
-    print("\nRunPod Configuration:")
-    print(f"API Key: {'*' * len(api_key)}")
-    print(f"RunPod Endpoint ID: {endpoint_id}")
-    return api_key, endpoint_id
+    launch_app(
+        mode=args.mode,
+        host=args.host,
+        port=args.port,
+        share=args.share,
+        use_runpod=args.use_runpod
+    )
 
 if __name__ == "__main__":
-    launch_development_servers()
+    main() 

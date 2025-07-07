@@ -1,79 +1,236 @@
-from typing import Optional, Dict, Any, List
-from pydantic import BaseModel, Field
-from enum import Enum
-import time
+"""Model management and TTS operations for the audiobook generation system."""
 
-class AudioFormat(str, Enum):
-    WAV = "wav"
-    MP3 = "mp3"
+import torch
+import random
+import numpy as np
+from .tts import AudiobookTTS as ChatterboxTTS
+from typing import Any, Tuple, Optional
 
-class VoiceProfile(BaseModel):
-    """Voice profile configuration"""
-    name: str = Field(..., description="Unique identifier for the voice")
-    display_name: Optional[str] = Field(None, description="Display name for the voice")
-    description: Optional[str] = Field(None, description="Description of the voice")
-    audio_file: str = Field(..., description="Path to reference audio file")
-    exaggeration: float = Field(0.5, description="Voice exaggeration level (0.0-1.0)")
-    cfg_weight: float = Field(0.5, description="Classifier-free guidance weight (0.0-1.0)")
-    temperature: float = Field(0.8, description="Generation temperature (0.0-1.0)")
-    created_date: float = Field(default_factory=time.time, description="Profile creation timestamp")
-    normalization_enabled: bool = Field(False, description="Whether audio normalization is enabled")
-    target_level_db: float = Field(-18.0, description="Target audio level in dB")
-    normalization_applied: bool = Field(False, description="Whether normalization was applied")
-    original_level_info: Optional[Dict[str, float]] = Field(None, description="Original audio level information")
-    version: str = Field("2.0", description="Profile version")
 
-class TTSGenerationSettings(BaseModel):
-    """Settings for TTS generation"""
-    text: str = Field(..., description="Text to convert to speech")
-    voice_name: str = Field(..., description="Name of the voice profile to use")
-    chunk_size: int = Field(50, description="Maximum words per chunk")
-    exaggeration: Optional[float] = Field(None, description="Override voice profile exaggeration")
-    temperature: Optional[float] = Field(None, description="Override voice profile temperature")
-    cfg_weight: Optional[float] = Field(None, description="Override voice profile CFG weight")
+# Global device setting - will be imported from main file
+DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+MULTI_VOICE_DEVICE = "cpu"  # Force CPU for multi-voice processing
 
-class AudioProcessingSettings(BaseModel):
-    """Audio processing settings"""
-    enable_normalization: bool = Field(True, description="Whether to normalize audio output")
-    target_level_db: float = Field(-18.0, description="Target audio level in dB")
-    crossfade_duration: float = Field(0.1, description="Crossfade duration between chunks in seconds")
-    output_format: AudioFormat = Field(AudioFormat.WAV, description="Output audio format")
 
-def create_default_audio_settings() -> AudioProcessingSettings:
-    return AudioProcessingSettings(
-        enable_normalization=True,
-        target_level_db=-18.0,
-        crossfade_duration=0.1,
-        output_format=AudioFormat.WAV
+def set_seed(seed: int) -> None:
+    """Set random seeds for reproducible generation.
+    
+    Args:
+        seed: Random seed value
+    """
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    random.seed(seed)
+    np.random.seed(seed)
+
+
+def load_model() -> ChatterboxTTS:
+    """Load TTS model for the default device.
+    
+    Returns:
+        ChatterboxTTS: Loaded TTS model
+    """
+    model = ChatterboxTTS.from_pretrained(DEVICE)
+    return model
+
+
+def load_model_cpu() -> ChatterboxTTS:
+    """Load model specifically for CPU processing.
+    
+    Returns:
+        ChatterboxTTS: CPU-loaded TTS model
+    """
+    model = ChatterboxTTS.from_pretrained("cpu")
+    return model
+
+
+def clear_gpu_memory() -> None:
+    """Clear GPU memory cache to prevent CUDA errors."""
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+        torch.cuda.synchronize()
+
+
+def check_gpu_memory() -> str:
+    """Check current GPU memory usage.
+    
+    Returns:
+        str: GPU memory status information
+    """
+    if torch.cuda.is_available():
+        allocated = torch.cuda.memory_allocated()
+        cached = torch.cuda.memory_reserved()
+        return f"GPU Memory - Allocated: {allocated//1024//1024}MB, Cached: {cached//1024//1024}MB"
+    return "CUDA not available"
+
+
+def generate(
+    model: ChatterboxTTS, 
+    text: str, 
+    audio_prompt_path: str, 
+    exaggeration: float, 
+    temperature: float, 
+    seed_num: int, 
+    cfgw: float
+) -> Tuple[int, np.ndarray]:
+    """Generate audio from text using the TTS model.
+    
+    Args:
+        model: TTS model instance
+        text: Text to convert to speech
+        audio_prompt_path: Path to audio prompt file
+        exaggeration: Exaggeration parameter for generation
+        temperature: Temperature for generation randomness
+        seed_num: Random seed (0 for random)
+        cfgw: CFG weight parameter
+        
+    Returns:
+        tuple: (sample_rate, audio_array)
+    """
+    if model is None:
+        model = ChatterboxTTS.from_pretrained(DEVICE)
+
+    if seed_num != 0:
+        set_seed(int(seed_num))
+
+    wav = model.generate(
+        text,
+        audio_prompt_path=audio_prompt_path,
+        exaggeration=exaggeration,
+        temperature=temperature,
+        cfg_weight=cfgw,
     )
+    return (model.sr, wav.squeeze(0).numpy())
 
-class ProjectMetadata(BaseModel):
-    """Project metadata"""
-    name: str = Field(..., description="Project name")
-    text_content: str = Field(..., description="Original text content")
-    voice_profile: VoiceProfile = Field(..., description="Voice profile used")
-    chunks: List[str] = Field(default_factory=list, description="Text chunks")
-    audio_files: List[str] = Field(default_factory=list, description="Generated audio file paths")
-    created_date: float = Field(default_factory=time.time, description="Project creation timestamp")
-    last_modified: float = Field(default_factory=time.time, description="Last modification timestamp")
-    processing_settings: AudioProcessingSettings = Field(
-        default_factory=create_default_audio_settings,
-        description="Audio processing settings used"
-    )
-    generation_settings: TTSGenerationSettings = Field(..., description="TTS generation settings used")
 
-class RunPodJobInput(BaseModel):
-    """RunPod job input"""
-    type: str = Field(..., description="Job type (tts or clone)")
-    text: Optional[str] = Field(None, description="Text for TTS generation")
-    voice_name: Optional[str] = Field(None, description="Voice name")
-    reference_audio: Optional[str] = Field(None, description="Base64 encoded reference audio for cloning")
-    parameters: Optional[Dict[str, Any]] = Field(default_factory=dict, description="Additional parameters")
+def generate_with_cpu_fallback(
+    model: ChatterboxTTS, 
+    text: str, 
+    audio_prompt_path: str, 
+    exaggeration: float, 
+    temperature: float, 
+    cfg_weight: float
+) -> Tuple[Any, str]:
+    """Generate audio with automatic CPU fallback for problematic CUDA errors.
+    
+    Args:
+        model: TTS model instance
+        text: Text to convert to speech
+        audio_prompt_path: Path to audio prompt file
+        exaggeration: Exaggeration parameter
+        temperature: Temperature parameter
+        cfg_weight: CFG weight parameter
+        
+    Returns:
+        tuple: (audio_wav, device_used)
+    """
+    # First try GPU if available
+    if DEVICE == "cuda":
+        try:
+            clear_gpu_memory()
+            wav = model.generate(
+                text,
+                audio_prompt_path=audio_prompt_path,
+                exaggeration=exaggeration,
+                temperature=temperature,
+                cfg_weight=cfg_weight,
+            )
+            return wav, "GPU"
+        except RuntimeError as e:
+            if ("srcIndex < srcSelectDimSize" in str(e) or 
+                "CUDA" in str(e) or 
+                "out of memory" in str(e).lower()):
+                
+                print(f"⚠️ CUDA error detected, falling back to CPU: {str(e)[:100]}...")
+                # Fall through to CPU mode
+            else:
+                raise e
+    
+    # CPU fallback or primary CPU mode
+    try:
+        # Load CPU model if needed
+        cpu_model = ChatterboxTTS.from_pretrained("cpu")
+        wav = cpu_model.generate(
+            text,
+            audio_prompt_path=audio_prompt_path,
+            exaggeration=exaggeration,
+            temperature=temperature,
+            cfg_weight=cfg_weight,
+        )
+        return wav, "CPU"
+    except Exception as e:
+        raise RuntimeError(f"Both GPU and CPU generation failed: {str(e)}")
 
-class RunPodJobOutput(BaseModel):
-    """RunPod job output"""
-    audio_data: Optional[str] = Field(None, description="Base64 encoded audio data")
-    content_type: Optional[str] = Field(None, description="Audio content type")
-    success: bool = Field(..., description="Whether the job was successful")
-    message: str = Field(..., description="Status or error message")
-    error: Optional[str] = Field(None, description="Error message if job failed") 
+
+def generate_with_retry(
+    model: ChatterboxTTS, 
+    text: str, 
+    audio_prompt_path: str, 
+    exaggeration: float, 
+    temperature: float, 
+    cfg_weight: float, 
+    max_retries: int = 3
+) -> Tuple[Any, str]:
+    """Generate audio with retry mechanism for robustness.
+    
+    Args:
+        model: TTS model instance
+        text: Text to convert to speech
+        audio_prompt_path: Path to audio prompt file
+        exaggeration: Exaggeration parameter
+        temperature: Temperature parameter
+        cfg_weight: CFG weight parameter
+        max_retries: Maximum number of retry attempts
+        
+    Returns:
+        tuple: (audio_wav, device_used)
+    """
+    last_error = None
+    
+    for attempt in range(max_retries):
+        try:
+            return generate_with_cpu_fallback(
+                model, text, audio_prompt_path, exaggeration, temperature, cfg_weight
+            )
+        except Exception as e:
+            last_error = e
+            print(f"Attempt {attempt + 1}/{max_retries} failed: {str(e)}")
+            if attempt < max_retries - 1:
+                clear_gpu_memory()
+    
+    raise RuntimeError(f"All {max_retries} attempts failed. Last error: {last_error}")
+
+
+def force_cpu_processing() -> bool:
+    """Check if we should force CPU processing for stability.
+    
+    Returns:
+        bool: True if CPU processing should be forced
+    """
+    # For multi-voice, always use CPU to avoid CUDA indexing issues
+    return True
+
+
+def get_model_device_str(model_obj: Optional[ChatterboxTTS]) -> str:
+    """Get the device string for a model object.
+    
+    Args:
+        model_obj: TTS model instance
+        
+    Returns:
+        str: Device information string
+    """
+    if model_obj is None:
+        return "No model loaded"
+    
+    try:
+        # Try to access model device info
+        if hasattr(model_obj, 'device'):
+            return f"Model device: {model_obj.device}"
+        elif hasattr(model_obj, 'model') and hasattr(model_obj.model, 'device'):
+            return f"Model device: {model_obj.model.device}"
+        else:
+            return "Device info unavailable"
+    except Exception as e:
+        return f"Error getting device info: {str(e)}" 
