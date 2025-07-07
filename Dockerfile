@@ -1,59 +1,35 @@
-FROM nvidia/cuda:11.8.0-cudnn8-runtime-ubuntu22.04
-
-ENV DEBIAN_FRONTEND=noninteractive
-ENV PYTHONUNBUFFERED=1
+FROM nvcr.io/nvidia/pytorch:24.12-py3
 
 # Install system dependencies
 RUN apt-get update && apt-get install -y \
-    python3.10 \
-    python3-pip \
-    python3.10-dev \
-    build-essential \
-    ffmpeg \
     libsndfile1 \
+    ffmpeg \
     git \
     && rm -rf /var/lib/apt/lists/*
-
-# Debug: Check Python version and pip location
-RUN echo "=== Python and pip versions ===" && \
-    python3 --version && \
-    which python3 && \
-    pip3 --version && \
-    which pip3
 
 # Set working directory
 WORKDIR /app
 
-# Create voice library structure
-RUN mkdir -p /app/voice_library/{clones,output,samples}
+# Copy requirements first to leverage Docker cache
+COPY requirements.txt .
 
-# Copy only the necessary files
-COPY pyproject.toml requirements.txt LICENSE README.md /app/
-COPY src/ /app/src/
-COPY runpod_deploy/handler.py /app/handler.py
+# Install Python dependencies
+RUN pip install --no-cache-dir -r requirements.txt
 
-# Debug: List contents
-RUN echo "=== Contents of /app ===" && \
-    ls -la /app && \
-    echo "=== Contents of /app/src ===" && \
-    ls -la /app/src
+# Copy source code
+COPY src/ src/
+COPY runpod_deploy/handler.py handler.py
 
-# Upgrade pip and install build tools
-RUN pip3 install --no-cache-dir --upgrade pip setuptools wheel
+# Create necessary directories
+RUN mkdir -p voice_library/samples voice_library/clones voice_library/output
+RUN mkdir -p audiobook_projects
 
-# Install runpod and other critical dependencies first
-RUN pip3 install --no-cache-dir runpod==1.3.3 torch==2.4.1 torchaudio==2.4.1
+# Set environment variables
+ENV PYTHONPATH=/app
+ENV VOICE_LIBRARY_PATH=/app/voice_library
 
-# Install additional required dependencies
-RUN pip3 install --no-cache-dir soundfile numpy librosa transformers
+# Expose port for serverless API
+EXPOSE 8000
 
-# Install the package in development mode with verbose output
-RUN pip3 install -e . -v
-
-# Final verification of installation
-RUN python3 -c "import runpod; print('RunPod version:', runpod.__version__)"
-RUN python3 -c "import soundfile; print('SoundFile available')"
-RUN python3 -c "import sys; sys.path.insert(0, '/app/src'); from audiobook.config import settings; print('Config loaded')"
-
-# Set the handler as the entrypoint
-CMD ["python3", "/app/handler.py"] 
+# Run the handler
+CMD ["python", "handler.py"] 
