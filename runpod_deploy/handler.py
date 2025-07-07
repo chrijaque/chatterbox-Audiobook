@@ -35,9 +35,33 @@ except ImportError:
     VOICE_CONVERSION_AVAILABLE = False
     print("Warning: ChatterboxVC not available. Voice conversion disabled.")
 
-# Initialize components
-tts_engine = TTSEngine()  # Direct TTSEngine instance
-voice_manager = VoiceManager(voice_library_path=settings.VOICE_LIBRARY_PATH)
+# Initialize components (lazy initialization to prevent startup crashes)
+tts_engine = None
+voice_manager = None
+
+def get_tts_engine():
+    """Get or initialize TTS engine."""
+    global tts_engine
+    if tts_engine is None:
+        try:
+            tts_engine = TTSEngine()
+            print("✅ TTS engine initialized successfully")
+        except Exception as e:
+            print(f"❌ TTS engine initialization failed: {e}")
+            raise
+    return tts_engine
+
+def get_voice_manager():
+    """Get or initialize voice manager."""
+    global voice_manager
+    if voice_manager is None:
+        try:
+            voice_manager = VoiceManager(voice_library_path=settings.VOICE_LIBRARY_PATH)
+            print("✅ Voice manager initialized successfully")
+        except Exception as e:
+            print(f"❌ Voice manager initialization failed: {e}")
+            raise
+    return voice_manager
 
 # Initialize Firebase if available and credentials exist
 bucket = None
@@ -82,16 +106,20 @@ def handle_tts_request(input_data):
     if not text:
         return {"error": "Text is required", "success": False}
     
+    # Get initialized components
+    vm = get_voice_manager()
+    tts = get_tts_engine()
+    
     # Load voice profile
-    audio_file, voice_profile = voice_manager.load_voice_for_tts(voice_name)
+    audio_file, voice_profile = vm.load_voice_for_tts(voice_name)
     if not audio_file:
         return {"error": f"Voice file not found for {voice_name}", "success": False}
     
     # Ensure model is loaded
-    tts_engine.load_model()
+    tts.load_model()
     
     # Generate audio with retry and CPU fallback
-    wav, device_used = tts_engine.generate_with_retry(
+    wav, device_used = tts.generate_with_retry(
         text=text,
         audio_prompt_path=audio_file,
         exaggeration=voice_profile.exaggeration,
@@ -102,7 +130,7 @@ def handle_tts_request(input_data):
     # Save to temporary file
     temp_dir = tempfile.mkdtemp()
     output_path = os.path.join(temp_dir, "output.wav")
-    sf.write(output_path, wav, tts_engine.sample_rate)
+    sf.write(output_path, wav, tts.sample_rate)
     
     # Convert to base64 for response
     with open(output_path, "rb") as f:
@@ -114,7 +142,7 @@ def handle_tts_request(input_data):
     
     return {
         "audio_data": audio_data,
-        "sample_rate": tts_engine.sample_rate,
+        "sample_rate": tts.sample_rate,
         "device_used": device_used,
         "success": True
     }
@@ -138,7 +166,8 @@ def handle_voice_clone_request(input_data):
         audio_data = base64.b64decode(audio_data_b64)
         
         # Save voice profile
-        voice_manager.save_profile(
+        vm = get_voice_manager()
+        vm.save_profile(
             voice_name=voice_name,
             audio_data=audio_data,
             display_name=voice_name,
@@ -191,7 +220,8 @@ def handle_voice_conversion_request(input_data):
             f.write(source_audio_data)
         
         # Find target voice file
-        target_voice_path = voice_manager.find_voice_file(target_voice_name)
+        vm = get_voice_manager()
+        target_voice_path = vm.find_voice_file(target_voice_name)
         if not target_voice_path:
             return {"error": f"Target voice file not found for: {target_voice_name}", "success": False}
         
@@ -246,14 +276,16 @@ if __name__ == "__main__":
     # Initialize components to verify everything works
     try:
         print("🔧 Initializing TTS engine...")
-        tts_engine.load_model()
+        tts = get_tts_engine()
+        tts.load_model()
         print("✅ TTS engine initialized successfully")
     except Exception as e:
         print(f"⚠️ TTS engine initialization warning: {e}")
     
     try:
         print("🎤 Testing voice manager...")
-        profiles = voice_manager.get_profiles()
+        vm = get_voice_manager()
+        profiles = vm.get_profiles()
         print(f"✅ Voice manager working - found {len(profiles)} profiles")
     except Exception as e:
         print(f"⚠️ Voice manager warning: {e}")
