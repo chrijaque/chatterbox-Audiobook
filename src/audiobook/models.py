@@ -39,6 +39,14 @@ class AudioProcessingSettings(BaseModel):
     crossfade_duration: float = Field(0.1, description="Crossfade duration between chunks in seconds")
     output_format: AudioFormat = Field(AudioFormat.WAV, description="Output audio format")
 
+def create_default_audio_settings() -> AudioProcessingSettings:
+    return AudioProcessingSettings(
+        enable_normalization=True,
+        target_level_db=-18.0,
+        crossfade_duration=0.1,
+        output_format=AudioFormat.WAV
+    )
+
 class ProjectMetadata(BaseModel):
     """Project metadata"""
     name: str = Field(..., description="Project name")
@@ -49,7 +57,7 @@ class ProjectMetadata(BaseModel):
     created_date: float = Field(default_factory=time.time, description="Project creation timestamp")
     last_modified: float = Field(default_factory=time.time, description="Last modification timestamp")
     processing_settings: AudioProcessingSettings = Field(
-        default_factory=AudioProcessingSettings,
+        default_factory=create_default_audio_settings,
         description="Audio processing settings used"
     )
     generation_settings: TTSGenerationSettings = Field(..., description="TTS generation settings used")

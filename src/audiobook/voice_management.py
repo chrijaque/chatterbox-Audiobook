@@ -201,11 +201,6 @@ class VoiceManager:
         try:
             audio_data, sample_rate = sf.read(audio_file)
             
-            # Check duration (5-30 seconds)
-            duration = len(audio_data) / sample_rate
-            if duration < 5 or duration > 30:
-                return False, f"Audio duration must be between 5-30 seconds (got {duration:.1f}s)"
-            
             # Check sample rate (16kHz minimum)
             if sample_rate < 16000:
                 return False, f"Sample rate must be at least 16kHz (got {sample_rate}Hz)"
@@ -266,7 +261,7 @@ class VoiceManager:
         name: str,
         description: Optional[str] = None,
         parameters: Optional[Dict[str, float]] = None
-    ) -> str:
+    ) -> Tuple[bool, str]:
         """Clone a voice using RunPod.
         
         Args:
@@ -279,72 +274,69 @@ class VoiceManager:
                 - temperature: Generation temperature (0-1)
         
         Returns:
-            str: Success message
+            tuple: (success: bool, message: str)
         """
+        print(f"\nVoiceManager.clone_voice called with:")
+        print(f"  audio_path: {audio_path}")
+        print(f"  name: {name}")
+        print(f"  description: {description}")
+        print(f"  parameters: {parameters}")
+        
         if not self.runpod_client:
-            raise ValueError("RunPod not configured. Please set RUNPOD_API_KEY and ENDPOINT_ID")
+            print("  Error: RunPod client not configured")
+            return False, "RunPod not configured. Please set RUNPOD_API_KEY and RUNPOD_ENDPOINT_ID"
             
         # Validate audio file
         valid, message = self.validate_voice_sample(audio_path)
         if not valid:
-            raise ValueError(f"Invalid voice sample: {message}")
+            print(f"  Error: Invalid voice sample - {message}")
+            return False, f"Invalid voice sample: {message}"
             
         # Create safe name
         safe_name = self._sanitize_name(name)
         if not safe_name:
-            raise ValueError("Invalid voice name")
+            print("  Error: Invalid voice name")
+            return False, "Invalid voice name"
             
+        print(f"  Using safe name: {safe_name}")
+        
         # Create voice directory
         voice_dir = self.path_manager.get_voice_clones_path() / safe_name
         voice_dir.mkdir(parents=True, exist_ok=True)
+        print(f"  Created voice directory: {voice_dir}")
         
         # Copy reference audio
         ref_audio = voice_dir / "reference.wav"
         shutil.copy2(audio_path, ref_audio)
-        
-        # Prepare RunPod job input
-        job_input = {
-            "voice_name": safe_name,
-            "audio_path": str(ref_audio),
-            "parameters": parameters or {}
-        }
+        print(f"  Copied reference audio to: {ref_audio}")
         
         try:
             # Submit cloning job
-            print(f"Submitting voice cloning job for {safe_name}...")
-            result = self.runpod_client.clone_voice(job_input)
+            print(f"  Submitting voice cloning job for {safe_name}...")
+            success, message = self.runpod_client.clone_voice(
+                audio_path=str(ref_audio),
+                voice_name=safe_name,
+                display_name=name,
+                description=description,
+                parameters=parameters or {}
+            )
             
-            if not result.success:
-                raise ValueError(f"Voice cloning failed: {result.error}")
+            print(f"  RunPod response: success={success}, message={message}")
+            
+            if not success:
+                # Clean up on failure
+                print("  Cleaning up voice directory due to failure")
+                shutil.rmtree(voice_dir)
+                return False, message
                 
-            # Save cloned voice data
-            for filename, data in result.files.items():
-                output_path = voice_dir / filename
-                with open(output_path, "wb") as f:
-                    f.write(data)
-            
-            # Create metadata
-            metadata = {
-                "name": safe_name,
-                "display_name": name,
-                "description": description or "",
-                "reference_audio": str(ref_audio),
-                "created_date": time.time(),
-                "parameters": parameters or {},
-                "version": "2.0"
-            }
-            
-            # Save metadata
-            metadata_path = voice_dir / "metadata.json"
-            with open(metadata_path, "w") as f:
-                json.dump(metadata, f, indent=2)
-                
-            return f"Voice '{name}' cloned successfully"
+            return True, f"Voice '{name}' cloned successfully"
             
         except Exception as e:
             # Clean up on failure
+            print(f"  Exception in clone_voice: {str(e)}")
+            print("  Cleaning up voice directory due to exception")
             shutil.rmtree(voice_dir)
-            raise ValueError(f"Voice cloning failed: {str(e)}")
+            return False, str(e)
 
     def _sanitize_name(self, name: str) -> str:
         """Create a safe filename from a display name"""
@@ -609,4 +601,11 @@ def create_assignment_interface_with_dropdowns(
             'available_voices': available_voices
         }
         for char in characters[:6]  # Limit to 6 characters
-    ] 
+    ]
+
+
+def check_runpod_config() -> Tuple[bool, str]:
+    """Check if RunPod is properly configured"""
+    if not settings.RUNPOD_API_KEY or not settings.ENDPOINT_ID:
+        return False, "RunPod not configured. Please set RUNPOD_API_KEY and RUNPOD_ENDPOINT_ID environment variables."
+    return True, "" 

@@ -8,6 +8,7 @@ from typing import Optional, Dict, Any, Tuple
 import requests
 from ..models import RunPodJobInput, RunPodJobOutput
 from dataclasses import dataclass
+import logging
 
 @dataclass
 class RunPodResponse:
@@ -30,6 +31,14 @@ class RunPodClient:
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json"
         }
+        
+        # Configure logging
+        self.logger = logging.getLogger("RunPodClient")
+        self.logger.setLevel(logging.DEBUG)
+        if not self.logger.handlers:
+            handler = logging.StreamHandler()
+            handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
+            self.logger.addHandler(handler)
     
     def clone_voice(
         self,
@@ -47,18 +56,20 @@ class RunPodClient:
             display_name: Display name (defaults to voice_name)
             description: Optional description
             parameters: Optional parameters for voice cloning
-                - exaggeration: Voice emotion exaggeration (0-1)
-                - cfg_weight: Classifier-free guidance weight (0-1)
-                - temperature: Generation temperature (0-1)
         
         Returns:
             Tuple[bool, str]: (success, message)
         """
+        self.logger.info(f"Starting voice cloning for {voice_name}")
+        self.logger.debug(f"Parameters: audio_path={audio_path}, display_name={display_name}, parameters={parameters}")
+        
         try:
             # Read and encode audio file
+            self.logger.debug("Reading audio file...")
             with open(audio_path, 'rb') as f:
                 audio_data = f.read()
             audio_b64 = base64.b64encode(audio_data).decode()
+            self.logger.debug("Audio file encoded successfully")
             
             # Prepare request data
             input_data = {
@@ -69,40 +80,84 @@ class RunPodClient:
                 "description": description or "",
                 "parameters": parameters or {}
             }
+            self.logger.debug(f"Prepared request data with keys: {input_data.keys()}")
             
-            # Submit job
-            response = requests.post(
-                f"{self.base_url}/run",
-                headers=self.headers,
-                json={"input": input_data},
-                timeout=30
-            )
-            response.raise_for_status()
+            # Submit job with timeout
+            self.logger.info("Submitting cloning job to RunPod...")
+            try:
+                response = requests.post(
+                    f"{self.base_url}/run",
+                    headers=self.headers,
+                    json={"input": input_data},
+                    timeout=30  # 30 second timeout for initial request
+                )
+                response.raise_for_status()
+            except requests.Timeout:
+                self.logger.error("Timeout while submitting job to RunPod")
+                return False, "Timeout while submitting job to RunPod"
+            except requests.RequestException as e:
+                self.logger.error(f"Error submitting job to RunPod: {str(e)}")
+                return False, f"Error submitting job: {str(e)}"
             
             data = response.json()
             if "error" in data:
-                return False, str(data["error"])
+                error_msg = str(data["error"])
+                self.logger.error(f"Error in RunPod response: {error_msg}")
+                return False, error_msg
             
-            # Poll for completion
+            # Get task ID and start polling
             task_id = data["id"]
+            self.logger.info(f"Job submitted successfully. Task ID: {task_id}")
+            
+            # Poll for completion with timeout
+            start_time = time.time()
+            max_wait_time = 300  # 5 minutes timeout
+            poll_interval = 5  # Check every 5 seconds
+            
             while True:
-                status = requests.get(
-                    f"{self.base_url}/status/{task_id}",
-                    headers=self.headers,
-                    timeout=10
-                ).json()
+                if time.time() - start_time > max_wait_time:
+                    self.logger.error("Timeout waiting for voice cloning to complete")
+                    return False, "Voice cloning timed out after 5 minutes"
                 
-                if status["status"] == "COMPLETED":
-                    result = status["output"]
-                    return result["success"], result["message"]
+                try:
+                    status_response = requests.get(
+                        f"{self.base_url}/status/{task_id}",
+                        headers=self.headers,
+                        timeout=10
+                    )
+                    status_response.raise_for_status()
+                    status_data = status_response.json()
                     
-                elif status["status"] in ["FAILED", "CANCELLED"]:
-                    return False, status.get("error", "Task failed or was cancelled")
+                    if "error" in status_data:
+                        error_msg = str(status_data["error"])
+                        self.logger.error(f"Error in job status: {error_msg}")
+                        return False, error_msg
                     
-                time.sleep(2)
+                    status = status_data.get("status")
+                    self.logger.debug(f"Current status: {status}")
+                    
+                    if status == "COMPLETED":
+                        self.logger.info("Voice cloning completed successfully")
+                        return True, "Voice cloned successfully"
+                    elif status == "FAILED":
+                        error_msg = status_data.get("error", "Unknown error")
+                        self.logger.error(f"Job failed: {error_msg}")
+                        return False, f"Voice cloning failed: {error_msg}"
+                    elif status == "CANCELLED":
+                        self.logger.error("Job was cancelled")
+                        return False, "Voice cloning was cancelled"
+                    
+                except requests.Timeout:
+                    self.logger.warning("Timeout while checking job status, will retry")
+                except requests.RequestException as e:
+                    self.logger.error(f"Error checking job status: {str(e)}")
+                    return False, f"Error checking job status: {str(e)}"
                 
+                time.sleep(poll_interval)
+            
         except Exception as e:
-            return False, f"Error cloning voice: {str(e)}"
+            self.logger.error(f"Unexpected error during voice cloning: {str(e)}", exc_info=True)
+            return False, f"Unexpected error: {str(e)}"
     
     def generate_speech(
         self,

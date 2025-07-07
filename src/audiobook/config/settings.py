@@ -55,12 +55,12 @@ NARRATOR_TAG = "[Narrator]"
 MAX_BATCH_SIZE = 10
 MAX_CONCURRENT_PROCESSES = 4
 
-# RunPod Settings
+# RunPod configuration
 RUNPOD_API_KEY = os.getenv("RUNPOD_API_KEY")
-ENDPOINT_ID = os.getenv("RUNPOD_ENDPOINT_ID")
-RUNPOD_TIMEOUT = 300  # seconds
-MAX_RETRIES = 3
-RETRY_DELAY = 5  # seconds
+ENDPOINT_ID = os.getenv("RUNPOD_ENDPOINT_ID")  # This is used throughout the codebase
+RUNPOD_TIMEOUT = int(os.getenv("RUNPOD_TIMEOUT", "300"))  # 5 minutes default timeout
+MAX_RETRIES = int(os.getenv("MAX_RETRIES", "3"))
+RETRY_DELAY = int(os.getenv("RETRY_DELAY", "5"))
 
 # Check if RunPod is configured
 is_runpod_configured = bool(RUNPOD_API_KEY and ENDPOINT_ID) 

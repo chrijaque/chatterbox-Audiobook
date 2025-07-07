@@ -40,13 +40,13 @@ def create_ui(tts_engine: Optional[AudiobookTTS] = None) -> gr.Blocks:
                         with gr.Column():
                             audio_recorder = gr.Audio(
                                 label="Record Voice",
-                                sources=["microphone"],
+                                source="microphone",
                                 type="filepath"
                             )
                         with gr.Column():
                             audio_uploader = gr.Audio(
                                 label="Upload Voice File",
-                                sources=["upload"],
+                                source="upload",
                                 type="filepath"
                             )
                     

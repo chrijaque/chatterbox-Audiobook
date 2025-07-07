@@ -48,8 +48,26 @@ class VoiceLibraryUI:
                             placeholder="Describe the voice characteristics..."
                         )
                     
-                    save_btn = gr.Button("Save Voice Sample", variant="primary")
-                    save_status = gr.Textbox(label="Status", interactive=False)
+                    # Voice Parameters
+                    with gr.Row():
+                        exaggeration = gr.Slider(
+                            minimum=0, maximum=1, value=0.5,
+                            label="Exaggeration"
+                        )
+                        cfg_weight = gr.Slider(
+                            minimum=0, maximum=1, value=0.5,
+                            label="CFG Weight"
+                        )
+                        temperature = gr.Slider(
+                            minimum=0, maximum=1, value=0.8,
+                            label="Temperature"
+                        )
+                    
+                    with gr.Row():
+                        clone_btn = gr.Button("Clone Voice", variant="primary")
+                        save_btn = gr.Button("Save Voice Sample")
+                    
+                    status = gr.Textbox(label="Status", interactive=False)
                     
                     # Voice List Section
                     gr.Markdown("### Available Voices")
@@ -62,6 +80,47 @@ class VoiceLibraryUI:
                         delete_btn = gr.Button("Delete Selected", variant="stop")
             
             # Event handlers
+            def clone_voice(
+                audio_path: str,
+                name: str,
+                desc: str,
+                exaggeration: float,
+                cfg_weight: float,
+                temperature: float
+            ) -> Tuple[str, List[List[str]]]:
+                """Clone a voice."""
+                print(f"\nUI Clone Voice called with:")
+                print(f"  audio_path: {audio_path}")
+                print(f"  name: {name}")
+                print(f"  description: {desc}")
+                print(f"  parameters: exaggeration={exaggeration}, cfg_weight={cfg_weight}, temperature={temperature}")
+                
+                if not audio_path:
+                    return "Please record or upload a voice sample", refresh_voices()
+                if not name:
+                    return "Please provide a name for the voice", refresh_voices()
+                    
+                try:
+                    print(f"Submitting voice cloning job for {name}...")
+                    success, message = self.voice_manager.clone_voice(
+                        audio_path=audio_path,
+                        name=name,
+                        description=desc,
+                        parameters={
+                            "exaggeration": exaggeration,
+                            "cfg_weight": cfg_weight,
+                            "temperature": temperature
+                        }
+                    )
+                    print(f"Clone result: success={success}, message={message}")
+                    if success:
+                        return message, refresh_voices()
+                    else:
+                        return f"Error cloning voice: {message}", refresh_voices()
+                except Exception as e:
+                    print(f"Exception in clone_voice: {str(e)}")
+                    return f"Error cloning voice: {str(e)}", refresh_voices()
+            
             def save_voice(audio_path: str, name: str, desc: str) -> Tuple[str, List[List[str]]]:
                 """Save a voice sample."""
                 if not audio_path:
@@ -101,6 +160,30 @@ class VoiceLibraryUI:
                     return f"Error deleting voice: {str(e)}", refresh_voices()
             
             # Connect event handlers
+            clone_btn.click(
+                fn=clone_voice,
+                inputs=[
+                    audio_recorder,  # Try recorder first
+                    voice_name,
+                    voice_desc,
+                    exaggeration,
+                    cfg_weight,
+                    temperature
+                ],
+                outputs=[status, voice_list]
+            ).then(  # If recorder is empty, try uploader
+                fn=clone_voice,
+                inputs=[
+                    audio_uploader,
+                    voice_name,
+                    voice_desc,
+                    exaggeration,
+                    cfg_weight,
+                    temperature
+                ],
+                outputs=[status, voice_list]
+            )
+            
             save_btn.click(
                 fn=save_voice,
                 inputs=[
@@ -108,7 +191,7 @@ class VoiceLibraryUI:
                     voice_name,
                     voice_desc
                 ],
-                outputs=[save_status, voice_list]
+                outputs=[status, voice_list]
             ).then(  # If recorder is empty, try uploader
                 fn=save_voice,
                 inputs=[
@@ -116,7 +199,7 @@ class VoiceLibraryUI:
                     voice_name,
                     voice_desc
                 ],
-                outputs=[save_status, voice_list]
+                outputs=[status, voice_list]
             )
             
             refresh_btn.click(
@@ -128,7 +211,7 @@ class VoiceLibraryUI:
             delete_btn.click(
                 fn=delete_voice,
                 inputs=[voice_list],
-                outputs=[save_status, voice_list]
+                outputs=[status, voice_list]
             )
             
             # Initial voice list load

@@ -4637,12 +4637,12 @@ with gr.Blocks(css=css, title="Chatterbox TTS - Audiobook Edition") as demo:
                                         show_share_button=False,
                                         show_controls=True,
                                         show_waveform=True,
-                                            waveform_color="#01C6FF",
-                                            waveform_progress_color="#0066B4", 
-                                            trim_region_color="#FF6B6B",
-                                            show_recording_waveform=True,
-                                            skip_length=5,
-                                            sample_rate=24000
+                                        waveform_color="#01C6FF",
+                                        waveform_progress_color="#0066B4", 
+                                        trim_region_color="#FF6B6B",
+                                        show_recording_waveform=True,
+                                        skip_length=5,
+                                        sample_rate=24000
                                     )
                                     
                                     save_original_trim_btn = gr.Button(
@@ -4679,12 +4679,12 @@ with gr.Blocks(css=css, title="Chatterbox TTS - Audiobook Edition") as demo:
                                         show_share_button=False,
                                         show_controls=True,
                                         show_waveform=True,
-                                            waveform_color="#FF6B6B",
-                                            waveform_progress_color="#FF4444",
-                                            trim_region_color="#FFB6C1",
-                                            show_recording_waveform=True,
-                                            skip_length=5,
-                                            sample_rate=24000
+                                        waveform_color="#FF6B6B",
+                                        waveform_progress_color="#FF4444",
+                                        trim_region_color="#FFB6C1",
+                                        show_recording_waveform=True,
+                                        skip_length=5,
+                                        sample_rate=24000
                                     )
                                     
                                     with gr.Row(visible=False) as accept_decline_row:

@@ -208,4 +208,9 @@ async def health_check():
 
 async def get_runpod_client():
     """Dependency to get RunPod client instance"""
-    return RunPodClient() 
+    if not settings.RUNPOD_API_KEY or not settings.ENDPOINT_ID:
+        raise HTTPException(
+            status_code=500,
+            detail="RunPod not configured. Please set RUNPOD_API_KEY and RUNPOD_ENDPOINT_ID"
+        )
+    return RunPodClient(settings.RUNPOD_API_KEY, settings.ENDPOINT_ID) 

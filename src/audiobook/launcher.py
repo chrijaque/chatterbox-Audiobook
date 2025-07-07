@@ -76,18 +76,7 @@ def launch_development_servers(
         load_dotenv(env_path)
     
     # Get RunPod credentials from environment
-    api_key = os.getenv("RUNPOD_API_KEY")
-    endpoint_id = os.getenv("ENDPOINT_ID")
-    
-    if not api_key or not endpoint_id:
-        print("\nEnvironment variables not found!")
-        print("Current environment:")
-        print(f"RUNPOD_API_KEY: {'*' * 8}{api_key[-8:] if api_key else 'Not Set'}")
-        print(f"ENDPOINT_ID: {endpoint_id if endpoint_id else 'Not Set'}")
-        print("\nPlease check your .env file contains:")
-        print("RUNPOD_API_KEY=your_api_key_here")
-        print("ENDPOINT_ID=your_endpoint_id_here")
-        raise ValueError("Missing RunPod configuration. Please set RUNPOD_API_KEY and ENDPOINT_ID environment variables.")
+    api_key, endpoint_id = check_runpod_config()
     
     # Add src directory to Python path
     src_dir = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
@@ -134,6 +123,25 @@ def launch_development_servers(
         api_process.terminate()
         api_process.join()
         sys.exit(0)
+
+def check_runpod_config():
+    """Check if RunPod is properly configured"""
+    api_key = os.getenv("RUNPOD_API_KEY")
+    endpoint_id = os.getenv("RUNPOD_ENDPOINT_ID")
+    
+    if not api_key or not endpoint_id:
+        print("\nRunPod Configuration Status:")
+        print(f"RUNPOD_API_KEY: {'Set' if api_key else 'Not Set'}")
+        print(f"RUNPOD_ENDPOINT_ID: {endpoint_id if endpoint_id else 'Not Set'}")
+        print("\nPlease set the following environment variables:")
+        print("export RUNPOD_API_KEY=your_api_key_here")
+        print("export RUNPOD_ENDPOINT_ID=your_endpoint_id_here")
+        raise ValueError("Missing RunPod configuration. Please set RUNPOD_API_KEY and RUNPOD_ENDPOINT_ID environment variables.")
+    
+    print("\nRunPod Configuration:")
+    print(f"API Key: {'*' * len(api_key)}")
+    print(f"RunPod Endpoint ID: {endpoint_id}")
+    return api_key, endpoint_id
 
 if __name__ == "__main__":
     launch_development_servers()

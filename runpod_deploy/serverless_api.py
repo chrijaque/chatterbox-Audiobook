@@ -11,11 +11,11 @@ import os
 def init_runpod():
     """Initialize RunPod client with credentials"""
     api_key = os.environ.get("RUNPOD_API_KEY")
-    endpoint_id = os.environ.get("ENDPOINT_ID")
+    endpoint_id = os.environ.get("RUNPOD_ENDPOINT_ID")
     
     if not api_key or not endpoint_id:
         raise ValueError(
-            "Please set RUNPOD_API_KEY and ENDPOINT_ID environment variables"
+            "Please set RUNPOD_API_KEY and RUNPOD_ENDPOINT_ID environment variables"
         )
     
     runpod.api_key = api_key
