@@ -82,9 +82,18 @@ else:
 def handler(event):
     """Handle RunPod serverless requests."""
     try:
+        # Validate event structure
+        if not isinstance(event, dict) or "input" not in event:
+            return {"error": "Invalid event structure - 'input' key required", "success": False}
+        
         # Extract parameters
         input_data = event["input"]
+        if not isinstance(input_data, dict):
+            return {"error": "Invalid input data - must be a dictionary", "success": False}
+            
         request_type = input_data.get("type", "tts")
+        
+        print(f"Processing request type: {request_type}")
         
         if request_type == "tts":
             return handle_tts_request(input_data)
@@ -93,9 +102,12 @@ def handler(event):
         elif request_type == "voice_convert":
             return handle_voice_conversion_request(input_data)
         else:
-            return {"error": f"Unknown request type: {request_type}"}
+            return {"error": f"Unknown request type: {request_type}. Supported types: tts, voice_clone, voice_convert", "success": False}
             
+    except KeyError as e:
+        return {"error": f"Missing required key: {str(e)}", "success": False}
     except Exception as e:
+        print(f"Handler error: {str(e)}")
         return {"error": str(e), "success": False}
 
 def handle_tts_request(input_data):
@@ -105,47 +117,55 @@ def handle_tts_request(input_data):
     
     if not text:
         return {"error": "Text is required", "success": False}
+    if not voice_name:
+        return {"error": "Voice name is required", "success": False}
     
-    # Get initialized components
-    vm = get_voice_manager()
-    tts = get_tts_engine()
-    
-    # Load voice profile
-    audio_file, voice_profile = vm.load_voice_for_tts(voice_name)
-    if not audio_file:
-        return {"error": f"Voice file not found for {voice_name}", "success": False}
-    
-    # Ensure model is loaded
-    tts.load_model()
-    
-    # Generate audio with retry and CPU fallback
-    wav, device_used = tts.generate_with_retry(
-        text=text,
-        audio_prompt_path=audio_file,
-        exaggeration=voice_profile.exaggeration,
-        temperature=voice_profile.temperature,
-        cfg_weight=voice_profile.cfg_weight
-    )
-    
-    # Save to temporary file
-    temp_dir = tempfile.mkdtemp()
-    output_path = os.path.join(temp_dir, "output.wav")
-    sf.write(output_path, wav, tts.sample_rate)
-    
-    # Convert to base64 for response
-    with open(output_path, "rb") as f:
-        audio_data = base64.b64encode(f.read()).decode()
-    
-    # Clean up
-    os.remove(output_path)
-    os.rmdir(temp_dir)
-    
-    return {
-        "audio_data": audio_data,
-        "sample_rate": tts.sample_rate,
-        "device_used": device_used,
-        "success": True
-    }
+    try:
+        # Get initialized components
+        vm = get_voice_manager()
+        tts = get_tts_engine()
+        
+        # Load voice profile
+        audio_file, voice_profile = vm.load_voice_for_tts(voice_name)
+        if not audio_file:
+            return {"error": f"Voice file not found for {voice_name}", "success": False}
+        
+        # Ensure model is loaded (only if not already loaded)
+        if not hasattr(tts, 'model') or tts.model is None:
+            tts.load_model()
+        
+        # Generate audio with retry and CPU fallback
+        wav, device_used = tts.generate_with_retry(
+            text=text,
+            audio_prompt_path=audio_file,
+            exaggeration=voice_profile.exaggeration,
+            temperature=voice_profile.temperature,
+            cfg_weight=voice_profile.cfg_weight
+        )
+        
+        # Save to temporary file
+        temp_dir = tempfile.mkdtemp()
+        output_path = os.path.join(temp_dir, "output.wav")
+        sf.write(output_path, wav, tts.sample_rate)
+        
+        # Convert to base64 for response
+        with open(output_path, "rb") as f:
+            audio_data = base64.b64encode(f.read()).decode()
+        
+        # Clean up
+        os.remove(output_path)
+        os.rmdir(temp_dir)
+        
+        return {
+            "audio_data": audio_data,
+            "sample_rate": tts.sample_rate,
+            "device_used": device_used,
+            "success": True
+        }
+        
+    except Exception as e:
+        print(f"TTS generation error: {str(e)}")
+        return {"error": f"TTS generation failed: {str(e)}", "success": False}
 
 def handle_voice_clone_request(input_data):
     """Handle voice cloning request."""
@@ -272,24 +292,9 @@ if __name__ == "__main__":
     print("🚀 Starting RunPod handler...")
     print(f"📁 Voice library path: {settings.VOICE_LIBRARY_PATH}")
     print(f"🔥 Firebase available: {FIREBASE_AVAILABLE}")
+    print(f"🎤 Voice conversion available: {VOICE_CONVERSION_AVAILABLE}")
     
-    # Initialize components to verify everything works
-    try:
-        print("🔧 Initializing TTS engine...")
-        tts = get_tts_engine()
-        tts.load_model()
-        print("✅ TTS engine initialized successfully")
-    except Exception as e:
-        print(f"⚠️ TTS engine initialization warning: {e}")
-    
-    try:
-        print("🎤 Testing voice manager...")
-        vm = get_voice_manager()
-        profiles = vm.get_profiles()
-        print(f"✅ Voice manager working - found {len(profiles)} profiles")
-    except Exception as e:
-        print(f"⚠️ Voice manager warning: {e}")
-
     print("🌐 Starting RunPod serverless handler...")
     print("⏳ Waiting for requests...")
+
 runpod.serverless.start({"handler": handler}) 
