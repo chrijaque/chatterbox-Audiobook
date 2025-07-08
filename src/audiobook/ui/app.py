@@ -41,63 +41,63 @@ def create_ui(tts_engine: Optional[AudiobookTTS] = None) -> gr.Blocks:
                 with gr.Tabs():
                     # Voice Recording/Upload Tab
                     with gr.Tab("Voice Library"):
-                        gr.Markdown("### Record or Upload Voice")
+                    gr.Markdown("### Record or Upload Voice")
                         
-                        with gr.Row():
+                    with gr.Row():
                             # Record Voice Section
-                            with gr.Column():
-                                audio_recorder = gr.Audio(
-                                    label="Record Voice",
-                                    type="filepath"
-                                )
+                        with gr.Column():
+                            audio_recorder = gr.Audio(
+                                label="Record Voice",
+                                type="filepath"
+                            )
                             
                             # Upload Voice Section
-                            with gr.Column():
-                                audio_uploader = gr.Audio(
-                                    label="Upload Voice File",
-                                    type="filepath"
-                                )
-                        
-                        with gr.Row():
-                            voice_name = gr.Textbox(
-                                label="Voice Name",
-                                placeholder="Enter a name for this voice..."
+                        with gr.Column():
+                            audio_uploader = gr.Audio(
+                                label="Upload Voice File",
+                                type="filepath"
                             )
-                            voice_desc = gr.Textbox(
-                                label="Description",
-                                placeholder="Describe the voice characteristics..."
-                            )
-                        
+                    
+                    with gr.Row():
+                        voice_name = gr.Textbox(
+                            label="Voice Name",
+                            placeholder="Enter a name for this voice..."
+                        )
+                        voice_desc = gr.Textbox(
+                            label="Description",
+                            placeholder="Describe the voice characteristics..."
+                        )
+                    
                         # Voice Parameters
-                        with gr.Row():
-                            exaggeration = gr.Slider(
+                    with gr.Row():
+                        exaggeration = gr.Slider(
                                 minimum=0, maximum=1, value=0.5,
                                 label="Exaggeration"
-                            )
-                            cfg_weight = gr.Slider(
+                        )
+                        cfg_weight = gr.Slider(
                                 minimum=0, maximum=1, value=0.5,
                                 label="CFG Weight"
-                            )
-                            temperature = gr.Slider(
+                        )
+                        temperature = gr.Slider(
                                 minimum=0, maximum=1, value=0.8,
                                 label="Temperature"
-                            )
-                        
-                        with gr.Row():
-                            clone_btn = gr.Button("Clone Voice", variant="primary")
-                            save_btn = gr.Button("Save Voice Sample")
+                        )
+                    
+                    with gr.Row():
+                        clone_btn = gr.Button("Clone Voice", variant="primary")
+                        save_btn = gr.Button("Save Voice Sample")
                         
                         status = gr.Textbox(label="Status", interactive=False)
-                        
+                    
                         # Voice List Section
-                        gr.Markdown("### Available Voices")
-                        voice_list = gr.Dataframe(
+                    gr.Markdown("### Available Voices")
+                    voice_list = gr.Dataframe(
                             headers=["Name", "Description", "Type"],
                             label="Voice Library"
-                        )
-                        with gr.Row():
-                            refresh_btn = gr.Button("Refresh List")
-                            delete_btn = gr.Button("Delete Selected", variant="stop")
+                    )
+                    with gr.Row():
+                        refresh_btn = gr.Button("Refresh List")
+                        delete_btn = gr.Button("Delete Selected", variant="stop")
                     
 
             

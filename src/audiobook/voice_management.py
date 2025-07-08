@@ -144,10 +144,10 @@ class VoiceManager:
                         with open(destination / "config.json", 'w') as f:
                             json.dump(config, f, indent=2)
                     
-                except Exception as e:
+            except Exception as e:
                     print(f"Error migrating voice '{item.name}': {e}")
                     continue
-    
+
     def get_profiles(self) -> List[VoiceProfile]:
         """Get all voice profiles from samples and clones directories."""
         profiles = []
@@ -223,8 +223,8 @@ class VoiceManager:
                 if audio_path.exists():
                     return str(audio_path)
         
-        return None
-
+            return None
+            
     def load_voice_for_tts(self, voice_name: str) -> Tuple[Optional[str], VoiceProfile]:
         """Load voice for TTS generation."""
         audio_file = self.find_voice_file(voice_name)
@@ -386,7 +386,7 @@ class VoiceManager:
             target_voice_name: Name of target voice profile
             output_name: Name for the output
             device: Device to use for inference (ignored for RunPod)
-            
+        
         Returns:
             Path to the cloned audio file
         """
@@ -494,7 +494,7 @@ class VoiceManager:
             voice_name=voice_name,
             audio_data=audio_data,
             display_name=display_name,
-            description=description,
+                description=description,
             **kwargs
         )
 

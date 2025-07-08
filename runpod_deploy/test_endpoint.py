@@ -16,9 +16,9 @@ def test_tts():
     
     # Use the correct run_sync method
     response = endpoint.run_sync({
-        "type": "tts",
-        "text": "Hello, this is a test of the text to speech system.",
-        "voice_name": None  # Using default voice
+            "type": "tts",
+            "text": "Hello, this is a test of the text to speech system.",
+            "voice_name": None  # Using default voice
     })
     
     print("Response:", response)

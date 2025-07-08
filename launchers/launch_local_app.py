@@ -12,12 +12,12 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
 try:
     from audiobook.launcher import launch_app
+
+if __name__ == "__main__":
+    print("🔒 Launching in LOCAL ONLY mode...")
+    print("📍 Finding available port (starting from 7860)...")
+    print("🚫 No network or public access enabled")
     
-    if __name__ == "__main__":
-        print("🔒 Launching in LOCAL ONLY mode...")
-        print("📍 Finding available port (starting from 7860)...")
-        print("🚫 No network or public access enabled")
-        
         launch_app(
             mode="ui",
             host="127.0.0.1",

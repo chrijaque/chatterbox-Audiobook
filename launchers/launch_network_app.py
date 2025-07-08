@@ -13,11 +13,11 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
 try:
     from audiobook.launcher import launch_app
-    
-    if __name__ == "__main__":
+
+if __name__ == "__main__":
         print("\n🌐 Launching in NETWORK mode...")
         print("⚠️  WARNING: Network access enabled!")
-        print("📍 Finding available port (starting from 7860)...")
+    print("📍 Finding available port (starting from 7860)...")
         
         # Get local IP for display
         hostname = socket.gethostname()

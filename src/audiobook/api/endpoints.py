@@ -48,15 +48,15 @@ async def generate_speech(
     try:
         # Initialize TTS engine
         tts_engine = AudiobookTTS()
-        
-        # Load voice profile
+    
+    # Load voice profile
         audio_file, voice_profile = voice_manager.load_voice_for_tts(voice_name)
         if not audio_file:
             raise HTTPException(
                 status_code=404,
                 detail=f"Voice file not found for {voice_name}"
             )
-        
+    
         # Generate speech
         output_path = tts_engine.generate_speech(
             text=text,

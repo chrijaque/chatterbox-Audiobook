@@ -164,7 +164,7 @@ def handle_voice_clone_request(input_data):
     try:
         # Decode audio data
         audio_data = base64.b64decode(audio_data_b64)
-        
+            
         # Save voice profile
         vm = get_voice_manager()
         vm.save_profile(
@@ -289,7 +289,7 @@ if __name__ == "__main__":
         print(f"✅ Voice manager working - found {len(profiles)} profiles")
     except Exception as e:
         print(f"⚠️ Voice manager warning: {e}")
-    
+
     print("🌐 Starting RunPod serverless handler...")
     print("⏳ Waiting for requests...")
-    runpod.serverless.start({"handler": handler}) 
+runpod.serverless.start({"handler": handler}) 
