@@ -78,16 +78,16 @@ class AudiobookTTS:
                 
             # Ensure output directory exists
             output_path = Path(output_path)
-                output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_path.parent.mkdir(parents=True, exist_ok=True)
             
             # Generate speech using RunPod
             audio_data = self._generate_speech(
-                    text=text,
-                    voice_id=voice_id,
-                    exaggeration=exaggeration,
-                    temperature=temperature,
-                    cfg_weight=cfg_weight,
-                )
+                text=text,
+                voice_id=voice_id,
+                exaggeration=exaggeration,
+                temperature=temperature,
+                cfg_weight=cfg_weight,
+            )
             
             # Save audio to file
             import soundfile as sf
@@ -109,31 +109,31 @@ class AudiobookTTS:
             
         Returns:
             Voice ID for the cloned voice
-        """
-            # Load and encode the audio file
-            audio, _ = librosa.load(str(voice_path), sr=self.sample_rate)
-            audio_bytes = audio.tobytes()
-            audio_b64 = base64.b64encode(audio_bytes).decode()
-            
-                # Call RunPod endpoint for voice cloning
-                response = self.endpoint.run({
-                    "type": "clone",
-                    "reference_audio": audio_b64,
-                    "voice_name": voice_path.parent.name,
-                    "parameters": {
-                        "exaggeration": exaggeration
-                    }
-                })
-                
+                """
+        # Load and encode the audio file
+        audio, _ = librosa.load(str(voice_path), sr=self.sample_rate)
+        audio_bytes = audio.tobytes()
+        audio_b64 = base64.b64encode(audio_bytes).decode()
+        
+        # Call RunPod endpoint for voice cloning
+        response = self.endpoint.run({
+            "type": "clone",
+            "reference_audio": audio_b64,
+            "voice_name": voice_path.parent.name,
+            "parameters": {
+                "exaggeration": exaggeration
+            }
+        })
+        
         result = response.output()
         if isinstance(result, dict) and result.get("error"):
             raise ValueError(f"RunPod error: {result['error']}")
-                
+        
         voice_id = result.get("voice_id") if isinstance(result, dict) else None
-                if not voice_id:
-                    raise ValueError("No voice ID returned from RunPod")
-                
-                return voice_id
+        if not voice_id:
+            raise ValueError("No voice ID returned from RunPod")
+        
+        return voice_id
     
     def _generate_speech(
         self,
@@ -144,25 +144,25 @@ class AudiobookTTS:
         cfg_weight: float = 0.5,
     ) -> np.ndarray:
         """Generate speech using Chatterbox models via RunPod."""
-            # Call RunPod endpoint for generation
-            response = self.endpoint.run({
-                "type": "tts",
-                "text": text,
-                "voice_id": voice_id,
-                "parameters": {
-                    "exaggeration": exaggeration,
-                    "temperature": temperature,
+        # Call RunPod endpoint for generation
+        response = self.endpoint.run({
+            "type": "tts",
+            "text": text,
+            "voice_id": voice_id,
+            "parameters": {
+                "exaggeration": exaggeration,
+                "temperature": temperature,
                 "cfg_weight": cfg_weight
-                }
-            })
-            
+            }
+        })
+        
         result = response.output()
         if isinstance(result, dict) and result.get("error"):
             raise ValueError(f"RunPod error: {result['error']}")
-            
-            # Convert base64 audio to numpy array
+        
+        # Convert base64 audio to numpy array
         if not isinstance(result, dict) or "audio_data" not in result:
             raise ValueError("Invalid response format from RunPod")
-            
+        
         audio_data = base64.b64decode(result["audio_data"])
         return np.frombuffer(audio_data, dtype=np.float32) 

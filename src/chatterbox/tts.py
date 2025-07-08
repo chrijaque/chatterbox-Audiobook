@@ -147,7 +147,7 @@ class ChatterboxTTS:
         if "model" in t3_state.keys():
             t3_state = t3_state["model"][0]
         if isinstance(t3_state, dict):
-        t3.load_state_dict(t3_state)
+            t3.load_state_dict(t3_state)
         t3.to(device).eval()
 
         s3gen = S3Gen()
