@@ -44,8 +44,8 @@ async def generate_tts(request: TTSRequest):
     try:
         # Run inference
         request_input: Dict[str, Any] = {
-                "type": "tts",
-                "text": request.text,
+            "type": "tts",
+            "text": request.text,
             "voice_name": request.voice_name
         }
         
@@ -63,15 +63,15 @@ async def generate_tts(request: TTSRequest):
             # Return URL for streaming
             return {"audio_url": result["audio_url"]}
         elif "audio_data" in result:
-        # Return audio file directly
+            # Return audio file directly
             audio_data = base64.b64decode(result["audio_data"])
-        return Response(
-            content=audio_data,
+            return Response(
+                content=audio_data,
                 media_type="audio/wav",
-            headers={
-                "Content-Disposition": f'attachment; filename="audio.wav"'
-            }
-        )
+                headers={
+                    "Content-Disposition": f'attachment; filename="audio.wav"'
+                }
+            )
         else:
             raise HTTPException(status_code=500, detail="No audio data in response")
             
@@ -83,15 +83,15 @@ async def clone_voice(request: VoiceCloneRequest, audio_file: UploadFile = File(
     """Clone a voice from reference audio"""
     try:
         # Read and encode audio file
-            audio_data = await audio_file.read()
-            audio_base64 = base64.b64encode(audio_data).decode()
+        audio_data = await audio_file.read()
+        audio_base64 = base64.b64encode(audio_data).decode()
         
         # Run inference
         request_input: Dict[str, Any] = {
-                "type": "clone",
-                "reference_audio": audio_base64,
+            "type": "clone",
+            "reference_audio": audio_base64,
             "voice_name": request.voice_name
-            }
+        }
         
         response = endpoint.run(request_input)
         result = response.output()

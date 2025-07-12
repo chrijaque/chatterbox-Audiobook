@@ -121,47 +121,47 @@ def handle_tts_request(input_data):
         return {"error": "Voice name is required", "success": False}
     
     try:
-    # Get initialized components
-    vm = get_voice_manager()
-    tts = get_tts_engine()
-    
-    # Load voice profile
-    audio_file, voice_profile = vm.load_voice_for_tts(voice_name)
-    if not audio_file:
-        return {"error": f"Voice file not found for {voice_name}", "success": False}
-    
+        # Get initialized components
+        vm = get_voice_manager()
+        tts = get_tts_engine()
+        
+        # Load voice profile
+        audio_file, voice_profile = vm.load_voice_for_tts(voice_name)
+        if not audio_file:
+            return {"error": f"Voice file not found for {voice_name}", "success": False}
+        
         # Ensure model is loaded (only if not already loaded)
         if not hasattr(tts, 'model') or tts.model is None:
-    tts.load_model()
-    
-    # Generate audio with retry and CPU fallback
-    wav, device_used = tts.generate_with_retry(
-        text=text,
-        audio_prompt_path=audio_file,
-        exaggeration=voice_profile.exaggeration,
-        temperature=voice_profile.temperature,
-        cfg_weight=voice_profile.cfg_weight
-    )
-    
-    # Save to temporary file
-    temp_dir = tempfile.mkdtemp()
-    output_path = os.path.join(temp_dir, "output.wav")
-    sf.write(output_path, wav, tts.sample_rate)
-    
-    # Convert to base64 for response
-    with open(output_path, "rb") as f:
-        audio_data = base64.b64encode(f.read()).decode()
-    
-    # Clean up
-    os.remove(output_path)
-    os.rmdir(temp_dir)
-    
-    return {
-        "audio_data": audio_data,
-        "sample_rate": tts.sample_rate,
-        "device_used": device_used,
-        "success": True
-    }
+            tts.load_model()
+        
+        # Generate audio with retry and CPU fallback
+        wav, device_used = tts.generate_with_retry(
+            text=text,
+            audio_prompt_path=audio_file,
+            exaggeration=voice_profile.exaggeration,
+            temperature=voice_profile.temperature,
+            cfg_weight=voice_profile.cfg_weight
+        )
+        
+        # Save to temporary file
+        temp_dir = tempfile.mkdtemp()
+        output_path = os.path.join(temp_dir, "output.wav")
+        sf.write(output_path, wav, tts.sample_rate)
+        
+        # Convert to base64 for response
+        with open(output_path, "rb") as f:
+            audio_data = base64.b64encode(f.read()).decode()
+        
+        # Clean up
+        os.remove(output_path)
+        os.rmdir(temp_dir)
+        
+        return {
+            "audio_data": audio_data,
+            "sample_rate": tts.sample_rate,
+            "device_used": device_used,
+            "success": True
+        }
         
     except Exception as e:
         print(f"TTS generation error: {str(e)}")
