@@ -42,9 +42,8 @@ def create_ui(tts_engine: Optional[AudiobookTTS] = None) -> gr.Blocks:
         job_state = gr.State(value={"is_running": False, "task_id": None, "should_cancel": False})
         
         with gr.Tabs() as tabs:
-            # Voice Library Tab - Use dedicated VoiceLibraryUI
+            # Voice Library Tab
             with gr.Tab("Voice Library"):
-                # Create the voice library interface content directly
                 gr.Markdown("# Voice Library")
                 
                 with gr.Tabs():
@@ -60,7 +59,7 @@ def create_ui(tts_engine: Optional[AudiobookTTS] = None) -> gr.Blocks:
                                     type="filepath"
                                 )
                                 
-                                # Upload Voice Section
+                            # Upload Voice Section
                             with gr.Column():
                                 audio_uploader = gr.Audio(
                                     label="Upload Voice File",
@@ -94,7 +93,7 @@ def create_ui(tts_engine: Optional[AudiobookTTS] = None) -> gr.Blocks:
                         
                         with gr.Row():
                             clone_btn = gr.Button("Clone Voice", variant="primary")
-                            stop_btn = gr.Button("⏹️ Stop Cloning", variant="stop", visible=False)
+                            stop_btn = gr.Button("⏹️ Stop", variant="stop")
                             save_btn = gr.Button("Save Voice Sample")
                             
                         status = gr.Textbox(label="Status", interactive=False)
@@ -108,7 +107,7 @@ def create_ui(tts_engine: Optional[AudiobookTTS] = None) -> gr.Blocks:
                         with gr.Row():
                             refresh_btn = gr.Button("Refresh List")
                             delete_btn = gr.Button("Delete Selected", variant="stop")
-                    
+            
 
             
             # TTS Tab
@@ -146,6 +145,19 @@ def create_ui(tts_engine: Optional[AudiobookTTS] = None) -> gr.Blocks:
             """Wrapper to handle both recorder and uploader audio inputs."""
             # Use recorder audio if available, otherwise use uploader audio
             audio_path = recorder_audio if recorder_audio else uploader_audio
+            
+            # Show stop button while cloning is in progress
+            if not audio_path:
+                return "Please record or upload a voice sample", refresh_voice_list(), state, True, False
+            if not name:
+                return "Please provide a name for the voice", refresh_voice_list(), state, True, False
+            
+            # Set running state before starting
+            state["is_running"] = True
+            state["should_cancel"] = False
+            state["task_id"] = None
+            
+            # Return initial state to show stop button
             result, voice_list, updated_state = clone_voice(audio_path, name, desc, exaggeration, cfg_weight, temperature, state)
             
             # Return: status, voice_list, updated_state, clone_btn_visible, stop_btn_visible

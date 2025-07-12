@@ -1,4 +1,5 @@
-FROM nvcr.io/nvidia/pytorch:24.12-py3
+# Use an older NVIDIA PyTorch image that matches RunPod's drivers
+FROM nvcr.io/nvidia/pytorch:23.12-py3
 
 # Install system dependencies
 RUN apt-get update && apt-get install -y \
@@ -16,9 +17,8 @@ COPY requirements.txt .
 # Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy source code
-COPY src/ src/
-COPY runpod_deploy/handler.py handler.py
+# Copy entire project
+COPY . .
 
 # Create necessary directories
 RUN mkdir -p voice_library/samples voice_library/clones voice_library/output
@@ -32,4 +32,4 @@ ENV VOICE_LIBRARY_PATH=/app/voice_library
 EXPOSE 8000
 
 # Run the handler
-CMD ["python", "handler.py"] 
+CMD ["python", "-m", "runpod_deploy.handler"] 

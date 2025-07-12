@@ -1,9 +1,18 @@
+import os
+import sys
+
+# Add project root to Python path
+project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, project_root)
+
+print(f"🔍 Python path: {sys.path}")
+print(f"📂 Project root: {project_root}")
+print(f"📍 Current directory: {os.getcwd()}")
+
 import runpod
 import torch
 import base64
 import numpy as np
-import os
-import json
 import tempfile
 import soundfile as sf
 import torchaudio as ta
