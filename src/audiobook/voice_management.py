@@ -144,7 +144,7 @@ class VoiceManager:
                         with open(destination / "config.json", 'w') as f:
                             json.dump(config, f, indent=2)
                     
-            except Exception as e:
+                except Exception as e:
                     print(f"Error migrating voice '{item.name}': {e}")
                     continue
 
@@ -223,7 +223,7 @@ class VoiceManager:
                 if audio_path.exists():
                     return str(audio_path)
         
-            return None
+        return None
             
     def load_voice_for_tts(self, voice_name: str) -> Tuple[Optional[str], VoiceProfile]:
         """Load voice for TTS generation."""

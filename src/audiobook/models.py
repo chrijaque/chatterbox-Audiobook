@@ -3,13 +3,13 @@
 import torch
 import random
 import numpy as np
-from .tts import AudiobookTTS as ChatterboxTTS
+from .tts import AudiobookTTS
 from typing import Any, Tuple, Optional
 
 
 # Global device setting - will be imported from main file
-DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-MULTI_VOICE_DEVICE = "cpu"  # Force CPU for multi-voice processing
+DEVICE = "runpod"  # Always use RunPod for TTS
+MULTI_VOICE_DEVICE = "runpod"  # Also use RunPod for multi-voice processing
 
 
 def set_seed(seed: int) -> None:
@@ -25,23 +25,23 @@ def set_seed(seed: int) -> None:
     np.random.seed(seed)
 
 
-def load_model() -> ChatterboxTTS:
+def load_model() -> AudiobookTTS:
     """Load TTS model for the default device.
     
     Returns:
-        ChatterboxTTS: Loaded TTS model
+        AudiobookTTS: Loaded TTS model
     """
-    model = ChatterboxTTS.from_pretrained(DEVICE)
+    model = AudiobookTTS.from_pretrained(DEVICE)
     return model
 
 
-def load_model_cpu() -> ChatterboxTTS:
+def load_model_cpu() -> AudiobookTTS:
     """Load model specifically for CPU processing.
     
     Returns:
-        ChatterboxTTS: CPU-loaded TTS model
+        AudiobookTTS: CPU-loaded TTS model
     """
-    model = ChatterboxTTS.from_pretrained("cpu")
+    model = AudiobookTTS.from_pretrained("cpu")
     return model
 
 
@@ -66,7 +66,7 @@ def check_gpu_memory() -> str:
 
 
 def generate(
-    model: ChatterboxTTS, 
+    model: AudiobookTTS, 
     text: str, 
     audio_prompt_path: str, 
     exaggeration: float, 
@@ -89,7 +89,7 @@ def generate(
         tuple: (sample_rate, audio_array)
     """
     if model is None:
-        model = ChatterboxTTS.from_pretrained(DEVICE)
+        model = AudiobookTTS.from_pretrained(DEVICE)
 
     if seed_num != 0:
         set_seed(int(seed_num))
@@ -105,7 +105,7 @@ def generate(
 
 
 def generate_with_cpu_fallback(
-    model: ChatterboxTTS, 
+    model: AudiobookTTS, 
     text: str, 
     audio_prompt_path: str, 
     exaggeration: float, 
@@ -150,7 +150,7 @@ def generate_with_cpu_fallback(
     # CPU fallback or primary CPU mode
     try:
         # Load CPU model if needed
-        cpu_model = ChatterboxTTS.from_pretrained("cpu")
+        cpu_model = AudiobookTTS.from_pretrained("cpu")
         wav = cpu_model.generate(
             text,
             audio_prompt_path=audio_prompt_path,
@@ -164,7 +164,7 @@ def generate_with_cpu_fallback(
 
 
 def generate_with_retry(
-    model: ChatterboxTTS, 
+    model: AudiobookTTS, 
     text: str, 
     audio_prompt_path: str, 
     exaggeration: float, 
@@ -212,7 +212,7 @@ def force_cpu_processing() -> bool:
     return True
 
 
-def get_model_device_str(model_obj: Optional[ChatterboxTTS]) -> str:
+def get_model_device_str(model_obj: Optional[AudiobookTTS]) -> str:
     """Get the device string for a model object.
     
     Args:
@@ -228,8 +228,6 @@ def get_model_device_str(model_obj: Optional[ChatterboxTTS]) -> str:
         # Try to access model device info
         if hasattr(model_obj, 'device'):
             return f"Model device: {model_obj.device}"
-        elif hasattr(model_obj, 'model') and hasattr(model_obj.model, 'device'):
-            return f"Model device: {model_obj.model.device}"
         else:
             return "Device info unavailable"
     except Exception as e:

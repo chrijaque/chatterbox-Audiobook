@@ -151,6 +151,17 @@ def create_ui(tts_engine: Optional[AudiobookTTS] = None) -> gr.Blocks:
             # Return: status, voice_list, updated_state, clone_btn_visible, stop_btn_visible
             return result, voice_list, updated_state, not updated_state["is_running"], updated_state["is_running"]
         
+        def save_voice_wrapper(
+            recorder_audio: str,
+            uploader_audio: str,
+            name: str,
+            desc: str
+        ) -> Tuple[str, List[List[str]]]:
+            """Wrapper to handle both recorder and uploader audio inputs."""
+            # Use recorder audio if available, otherwise use uploader audio
+            audio_path = recorder_audio if recorder_audio else uploader_audio
+            return save_voice(audio_path, name, desc)
+        
         def stop_cloning(state: dict) -> Tuple[str, dict, bool, bool]:
             """Stop the current voice cloning job."""
             state["should_cancel"] = True
@@ -326,7 +337,7 @@ def create_ui(tts_engine: Optional[AudiobookTTS] = None) -> gr.Blocks:
         
         def delete_voice(selected_data: List[List[str]]) -> Tuple[str, List[List[str]]]:
             """Delete selected voice."""
-            if not selected_data:
+            if not selected_data or len(selected_data) == 0:
                 return "Please select a voice to delete", refresh_voice_list()
             try:
                 name = selected_data[0][0]  # First column is name
