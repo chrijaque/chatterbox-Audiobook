@@ -99,13 +99,13 @@ class RunPodClient:
             # Submit job with timeout
             self.logger.info("Submitting cloning job to RunPod...")
             try:
-            response = requests.post(
-                f"{self.base_url}/run",
-                headers=self.headers,
-                json={"input": input_data},
+                response = requests.post(
+                    f"{self.base_url}/run",
+                    headers=self.headers,
+                    json={"input": input_data},
                     timeout=30  # 30 second timeout for initial request
-            )
-            response.raise_for_status()
+                )
+                response.raise_for_status()
             except requests.Timeout:
                 self.logger.error("Timeout while submitting job to RunPod")
                 return RunPodResult.error("Timeout while submitting job to RunPod")
@@ -504,5 +504,205 @@ class RunPodClient:
         except Exception as e:
             self.logger.error(f"Unexpected error during voice conversion: {str(e)}", exc_info=True)
             return None, f"Unexpected error: {str(e)}"
+
+    def clone_voice_async(
+        self,
+        audio_path: str,
+        voice_name: str,
+        display_name: Optional[str] = None,
+        description: Optional[str] = None,
+        parameters: Optional[Dict[str, float]] = None
+    ) -> Tuple[RunPodResult, Optional[str]]:
+        """Submit voice cloning job asynchronously and return task ID.
+        
+        Args:
+            audio_path: Path to the reference audio file
+            voice_name: Name for the cloned voice
+            display_name: Display name for the voice
+            description: Description of the voice
+            parameters: Optional cloning parameters (exaggeration, cfg_weight, temperature)
+        
+        Returns:
+            Tuple: (RunPodResult, task_id)
+        """
+        try:
+            # Prepare audio data
+            with open(audio_path, 'rb') as f:
+                audio_data = f.read()
+            
+            import base64
+            audio_b64 = base64.b64encode(audio_data).decode()
+            
+            # Prepare request data
+            input_data: Dict[str, Any] = {
+                "type": "voice_clone",
+                "audio_data": audio_b64,
+                "voice_name": voice_name,
+                "display_name": display_name or voice_name,
+                "description": description or "",
+                **( parameters or {})
+            }
+            
+            # Submit job with timeout
+            self.logger.info("Submitting voice cloning job to RunPod...")
+            try:
+                response = requests.post(
+                    f"{self.base_url}/run",
+                    headers=self.headers,
+                    json={"input": input_data},
+                    timeout=30  # 30 second timeout for initial request
+                )
+                response.raise_for_status()
+            except requests.Timeout:
+                self.logger.error("Timeout while submitting job to RunPod")
+                return RunPodResult.error("Timeout while submitting job to RunPod"), None
+            except requests.RequestException as e:
+                self.logger.error(f"Error submitting job to RunPod: {str(e)}")
+                return RunPodResult.error(f"Error submitting job: {str(e)}"), None
+            
+            # Parse response
+            response_data = response.json()
+            
+            # Check for errors
+            if "error" in response_data:
+                error_msg = str(response_data["error"])
+                self.logger.error(f"Error in RunPod response: {error_msg}")
+                return RunPodResult.error(error_msg), None
+            
+            # Get task ID
+            task_id = response_data.get("id")
+            if not task_id:
+                self.logger.error("No job ID in response")
+                return RunPodResult.error("Invalid response format"), None
+                
+            self.logger.info(f"Job submitted successfully. Task ID: {task_id}")
+            return RunPodResult.success(f"Job submitted: {task_id}"), task_id
+            
+        except Exception as e:
+            self.logger.error(f"Unexpected error during job submission: {str(e)}", exc_info=True)
+            return RunPodResult.error(f"Unexpected error: {str(e)}"), None
+
+    def wait_for_completion(self, task_id: str, state: Optional[Dict] = None) -> RunPodResult:
+        """Wait for job completion with cancellation support.
+        
+        Args:
+            task_id: The RunPod task ID to monitor
+            state: Optional state dict with cancellation flag
+            
+        Returns:
+            RunPodResult: Result of the operation
+        """
+        try:
+            # Poll for completion with timeout
+            start_time = time.time()
+            max_wait_time = 120  # Reduced to 2 minutes for faster feedback
+            poll_interval = 5  # Check every 5 seconds
+            consecutive_timeouts = 0
+            max_consecutive_timeouts = 3
+            
+            while True:
+                # Check for user cancellation
+                if state and state.get("should_cancel", False):
+                    self.logger.info("Job cancellation requested by user")
+                    # Try to cancel the job on RunPod
+                    cancel_result = self.cancel_job(task_id)
+                    if cancel_result.is_success:
+                        return RunPodResult.error("Job cancelled by user")
+                    else:
+                        return RunPodResult.error(f"Job cancelled by user (server cancellation failed: {cancel_result.message})")
+                
+                elapsed_time = time.time() - start_time
+                if elapsed_time > max_wait_time:
+                    self.logger.error(f"Timeout waiting for voice cloning to complete after {max_wait_time} seconds")
+                    return RunPodResult.error("RunPod endpoint not responding. Please check if your endpoint is running in the RunPod console.")
+                
+                try:
+                    status_response = requests.get(
+                        f"{self.base_url}/status/{task_id}",
+                        headers=self.headers,
+                        timeout=10
+                    )
+                    status_response.raise_for_status()
+                    consecutive_timeouts = 0  # Reset timeout counter on success
+                    
+                    # Parse status response
+                    status_data: Dict[str, Any] = status_response.json()
+                    
+                    # Check for errors
+                    if "error" in status_data:
+                        error_msg = str(status_data["error"])
+                        self.logger.error(f"Error in job status: {error_msg}")
+                        return RunPodResult.error(error_msg)
+                    
+                    # Check status
+                    status = status_data.get("status")
+                    self.logger.debug(f"Current status: {status} (elapsed: {elapsed_time:.1f}s)")
+                    
+                    if status == "COMPLETED":
+                        self.logger.info("Voice cloning completed successfully")
+                        return RunPodResult.success("Voice cloned successfully")
+                    elif status == "FAILED":
+                        error_msg = status_data.get("error", "Unknown error")
+                        self.logger.error(f"Job failed: {error_msg}")
+                        return RunPodResult.error(f"Voice cloning failed: {error_msg}")
+                    elif status == "CANCELLED":
+                        self.logger.error("Job was cancelled")
+                        return RunPodResult.error("Voice cloning was cancelled")
+                    elif status == "IN_QUEUE" and elapsed_time > 60:
+                        self.logger.warning(f"Job has been in queue for {elapsed_time:.1f} seconds - endpoint may be overloaded or down")
+                    
+                except requests.Timeout:
+                    consecutive_timeouts += 1
+                    self.logger.warning(f"Timeout while checking job status ({consecutive_timeouts}/{max_consecutive_timeouts})")
+                    if consecutive_timeouts >= max_consecutive_timeouts:
+                        self.logger.error("Too many consecutive timeouts - endpoint appears to be down")
+                        return RunPodResult.error("RunPod endpoint is not responding. Please check if the endpoint is running in your RunPod console.")
+                except requests.RequestException as e:
+                    self.logger.error(f"Error checking job status: {str(e)}")
+                    if "404" in str(e):
+                        return RunPodResult.error("RunPod endpoint not found. Please check your endpoint ID in the RunPod console.")
+                    return RunPodResult.error(f"Error checking job status: {str(e)}")
+                
+                time.sleep(poll_interval)
+                
+        except Exception as e:
+            self.logger.error(f"Unexpected error while waiting for completion: {str(e)}", exc_info=True)
+            return RunPodResult.error(f"Unexpected error: {str(e)}")
+
+    def cancel_job(self, task_id: str) -> RunPodResult:
+        """Cancel a running RunPod job.
+        
+        Args:
+            task_id: The RunPod task ID to cancel
+            
+        Returns:
+            RunPodResult: Result of the cancellation attempt
+        """
+        try:
+            self.logger.info(f"Attempting to cancel job: {task_id}")
+            
+            # Try to cancel via RunPod API
+            response = requests.post(
+                f"{self.base_url}/cancel/{task_id}",
+                headers=self.headers,
+                timeout=10
+            )
+            
+            if response.status_code == 200:
+                self.logger.info(f"Job {task_id} cancelled successfully")
+                return RunPodResult.success(f"Job {task_id} cancelled")
+            elif response.status_code == 404:
+                self.logger.warning(f"Job {task_id} not found - may already be completed")
+                return RunPodResult.success(f"Job {task_id} not found (may be completed)")
+            else:
+                self.logger.warning(f"Cancel request returned status {response.status_code}")
+                return RunPodResult.error(f"Cancel request failed with status {response.status_code}")
+                
+        except requests.RequestException as e:
+            self.logger.error(f"Error cancelling job {task_id}: {str(e)}")
+            return RunPodResult.error(f"Error cancelling job: {str(e)}")
+        except Exception as e:
+            self.logger.error(f"Unexpected error cancelling job {task_id}: {str(e)}")
+            return RunPodResult.error(f"Unexpected error: {str(e)}")
 
  

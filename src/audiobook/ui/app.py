@@ -1,27 +1,33 @@
 """Main application interface."""
 
 import gradio as gr
-from typing import Optional, List, Dict, Any, Tuple
-from ..tts import AudiobookTTS
-from ..config import settings
-from ..voice_management import VoiceManager
+import os
+import sys
+import threading
+import time
+from pathlib import Path
+from typing import Optional, Tuple, List, Any
+
+# Add src directory to path for imports
+current_dir = Path(__file__).parent.parent.parent
+sys.path.insert(0, str(current_dir))
+
+from audiobook.tts import AudiobookTTS
+from audiobook.voice_management import VoiceManager
+from audiobook.config import settings
 from .styles import css
 
-
+# Global job state for cancellation
+current_job_state = {
+    "is_running": False,
+    "task_id": None,
+    "should_cancel": False
+}
 
 def create_ui(tts_engine: Optional[AudiobookTTS] = None) -> gr.Blocks:
-    """Create the UI application."""
-    if tts_engine is None:
-        use_runpod = settings.is_runpod_configured
-        if use_runpod:
-            print("Initializing TTS engine with RunPod")
-            print(f"RunPod API Key: {settings.RUNPOD_API_KEY[:8]}...")
-            print(f"RunPod Endpoint ID: {settings.ENDPOINT_ID}")
-        else:
-            print("Warning: RunPod not configured, using local TTS engine")
-        tts_engine = AudiobookTTS(use_runpod=use_runpod)
+    """Create the Gradio interface for the audiobook TTS application."""
     
-    # Initialize managers
+    # Initialize voice manager
     voice_manager = VoiceManager(voice_library_path=settings.VOICE_LIBRARY_PATH)
     
     with gr.Blocks(css=css, title="Chatterbox TTS") as app:
@@ -32,6 +38,9 @@ def create_ui(tts_engine: Optional[AudiobookTTS] = None) -> gr.Blocks:
             </div>
         """)
         
+        # State variables for job management
+        job_state = gr.State(value={"is_running": False, "task_id": None, "should_cancel": False})
+        
         with gr.Tabs() as tabs:
             # Voice Library Tab - Use dedicated VoiceLibraryUI
             with gr.Tab("Voice Library"):
@@ -41,63 +50,64 @@ def create_ui(tts_engine: Optional[AudiobookTTS] = None) -> gr.Blocks:
                 with gr.Tabs():
                     # Voice Recording/Upload Tab
                     with gr.Tab("Voice Library"):
-                    gr.Markdown("### Record or Upload Voice")
+                        gr.Markdown("### Record or Upload Voice")
                         
-                    with gr.Row():
+                        with gr.Row():
                             # Record Voice Section
-                        with gr.Column():
-                            audio_recorder = gr.Audio(
-                                label="Record Voice",
-                                type="filepath"
+                            with gr.Column():
+                                audio_recorder = gr.Audio(
+                                    label="Record Voice",
+                                    type="filepath"
+                                )
+                                
+                                # Upload Voice Section
+                            with gr.Column():
+                                audio_uploader = gr.Audio(
+                                    label="Upload Voice File",
+                                    type="filepath"
+                                )
+                        
+                        with gr.Row():
+                            voice_name = gr.Textbox(
+                                label="Voice Name",
+                                placeholder="Enter a name for this voice..."
                             )
-                            
-                            # Upload Voice Section
-                        with gr.Column():
-                            audio_uploader = gr.Audio(
-                                label="Upload Voice File",
-                                type="filepath"
+                            voice_desc = gr.Textbox(
+                                label="Description",
+                                placeholder="Describe the voice characteristics..."
                             )
-                    
-                    with gr.Row():
-                        voice_name = gr.Textbox(
-                            label="Voice Name",
-                            placeholder="Enter a name for this voice..."
-                        )
-                        voice_desc = gr.Textbox(
-                            label="Description",
-                            placeholder="Describe the voice characteristics..."
-                        )
-                    
+                        
                         # Voice Parameters
-                    with gr.Row():
-                        exaggeration = gr.Slider(
+                        with gr.Row():
+                            exaggeration = gr.Slider(
                                 minimum=0, maximum=1, value=0.5,
                                 label="Exaggeration"
-                        )
-                        cfg_weight = gr.Slider(
+                            )
+                            cfg_weight = gr.Slider(
                                 minimum=0, maximum=1, value=0.5,
                                 label="CFG Weight"
-                        )
-                        temperature = gr.Slider(
+                            )
+                            temperature = gr.Slider(
                                 minimum=0, maximum=1, value=0.8,
                                 label="Temperature"
-                        )
-                    
-                    with gr.Row():
-                        clone_btn = gr.Button("Clone Voice", variant="primary")
-                        save_btn = gr.Button("Save Voice Sample")
+                            )
                         
+                        with gr.Row():
+                            clone_btn = gr.Button("Clone Voice", variant="primary")
+                            stop_btn = gr.Button("⏹️ Stop Cloning", variant="stop", visible=False)
+                            save_btn = gr.Button("Save Voice Sample")
+                            
                         status = gr.Textbox(label="Status", interactive=False)
-                    
+                        
                         # Voice List Section
-                    gr.Markdown("### Available Voices")
-                    voice_list = gr.Dataframe(
+                        gr.Markdown("### Available Voices")
+                        voice_list = gr.Dataframe(
                             headers=["Name", "Description", "Type"],
                             label="Voice Library"
-                    )
-                    with gr.Row():
-                        refresh_btn = gr.Button("Refresh List")
-                        delete_btn = gr.Button("Delete Selected", variant="stop")
+                        )
+                        with gr.Row():
+                            refresh_btn = gr.Button("Refresh List")
+                            delete_btn = gr.Button("Delete Selected", variant="stop")
                     
 
             
@@ -130,23 +140,39 @@ def create_ui(tts_engine: Optional[AudiobookTTS] = None) -> gr.Blocks:
             desc: str,
             exaggeration: float,
             cfg_weight: float,
-            temperature: float
-        ) -> Tuple[str, List[List[str]]]:
+            temperature: float,
+            state: dict
+        ) -> Tuple[str, List[List[str]], dict, bool, bool]:
             """Wrapper to handle both recorder and uploader audio inputs."""
             # Use recorder audio if available, otherwise use uploader audio
             audio_path = recorder_audio if recorder_audio else uploader_audio
-            return clone_voice(audio_path, name, desc, exaggeration, cfg_weight, temperature)
+            result, voice_list, updated_state = clone_voice(audio_path, name, desc, exaggeration, cfg_weight, temperature, state)
+            
+            # Return: status, voice_list, updated_state, clone_btn_visible, stop_btn_visible
+            return result, voice_list, updated_state, not updated_state["is_running"], updated_state["is_running"]
         
-        def save_voice_wrapper(
-            recorder_audio: str,
-            uploader_audio: str,
-            name: str,
-            desc: str
-        ) -> Tuple[str, List[List[str]]]:
-            """Wrapper to handle both recorder and uploader audio inputs."""
-            # Use recorder audio if available, otherwise use uploader audio
-            audio_path = recorder_audio if recorder_audio else uploader_audio
-            return save_voice(audio_path, name, desc)
+        def stop_cloning(state: dict) -> Tuple[str, dict, bool, bool]:
+            """Stop the current voice cloning job."""
+            state["should_cancel"] = True
+            
+            # If we have a task_id, try to cancel it on RunPod
+            if state.get("task_id"):
+                try:
+                    from audiobook.api.runpod_client import RunPodClient
+                    client = RunPodClient(
+                        api_key=settings.RUNPOD_API_KEY,
+                        endpoint_id=settings.ENDPOINT_ID
+                    )
+                    client.cancel_job(state["task_id"])
+                    print(f"🛑 Cancellation request sent for job: {state['task_id']}")
+                except Exception as e:
+                    print(f"Error cancelling job: {e}")
+            
+            state["is_running"] = False
+            state["task_id"] = None
+            
+            # Return: status, updated_state, clone_btn_visible, stop_btn_visible
+            return "🛑 Voice cloning cancelled by user", state, True, False
         
         def clone_voice(
             audio_path: str,
@@ -154,21 +180,33 @@ def create_ui(tts_engine: Optional[AudiobookTTS] = None) -> gr.Blocks:
             desc: str,
             exaggeration: float,
             cfg_weight: float,
-            temperature: float
-        ) -> Tuple[str, List[List[str]]]:
+            temperature: float,
+            state: dict
+        ) -> Tuple[str, List[List[str]], dict]:
             """Clone voice: save sample in 'samples' folder + send to RunPod + save clone in 'clones' folder."""
             if not audio_path:
-                return "Please record or upload a voice sample", refresh_voice_list()
+                return "Please record or upload a voice sample", refresh_voice_list(), state
             if not name:
-                return "Please provide a name for the voice", refresh_voice_list()
+                return "Please provide a name for the voice", refresh_voice_list(), state
+            
+            # Reset cancellation flag and set running state
+            state["should_cancel"] = False
+            state["is_running"] = True
+            state["task_id"] = None
                 
             try:
                 # Check if RunPod is available
                 from audiobook.voice_management import RUNPOD_AVAILABLE
                 if not RUNPOD_AVAILABLE:
-                    return "Voice cloning not available - RunPod not configured", refresh_voice_list()
+                    state["is_running"] = False
+                    return "Voice cloning not available - RunPod not configured", refresh_voice_list(), state
                 
                 print(f"Starting voice cloning process for: {name}")
+                
+                # Check for cancellation
+                if state["should_cancel"]:
+                    state["is_running"] = False
+                    return "🛑 Voice cloning cancelled by user", refresh_voice_list(), state
                 
                 # Step 1: Save the voice sample in "samples" folder
                 with open(audio_path, 'rb') as f:
@@ -181,6 +219,11 @@ def create_ui(tts_engine: Optional[AudiobookTTS] = None) -> gr.Blocks:
                     description=desc
                 )
                 print(f"✅ Voice sample saved in samples folder: {voice_name}")
+                
+                # Check for cancellation
+                if state["should_cancel"]:
+                    state["is_running"] = False
+                    return "🛑 Voice cloning cancelled by user", refresh_voice_list(), state
                 
                 # Step 2: Send to RunPod for voice cloning
                 from audiobook.api.runpod_client import RunPodClient
@@ -196,7 +239,9 @@ def create_ui(tts_engine: Optional[AudiobookTTS] = None) -> gr.Blocks:
                 }
                 
                 print(f"📤 Sending audio to RunPod for voice cloning...")
-                result = client.clone_voice(
+                
+                # Submit job and get task_id for cancellation
+                result, task_id = client.clone_voice_async(
                     audio_path=audio_path,
                     voice_name=name,
                     display_name=name,
@@ -204,8 +249,23 @@ def create_ui(tts_engine: Optional[AudiobookTTS] = None) -> gr.Blocks:
                     parameters=parameters
                 )
                 
+                if task_id:
+                    state["task_id"] = task_id
+                    print(f"📋 Job submitted with ID: {task_id}")
+                    
+                    # Poll for completion with cancellation checks
+                    result = client.wait_for_completion(task_id, state)
+                
                 if not result.is_success:
-                    return f"Voice cloning failed: {result.message}", refresh_voice_list()
+                    state["is_running"] = False
+                    if "cancelled" in result.message.lower():
+                        return f"🛑 Voice cloning cancelled: {result.message}", refresh_voice_list(), state
+                    return f"Voice cloning failed: {result.message}", refresh_voice_list(), state
+                
+                # Check for cancellation one more time
+                if state["should_cancel"]:
+                    state["is_running"] = False
+                    return "🛑 Voice cloning cancelled by user", refresh_voice_list(), state
                 
                 print(f"✅ RunPod voice cloning completed successfully!")
                 
@@ -221,13 +281,17 @@ def create_ui(tts_engine: Optional[AudiobookTTS] = None) -> gr.Blocks:
                 )
                 print(f"✅ Cloned voice saved in clones folder: {cloned_voice_name}")
                 
-                return f"🎉 Voice cloning completed! Original saved in 'samples', clone saved in 'clones'. Voice '{voice_name}' is ready for TTS!", refresh_voice_list()
+                state["is_running"] = False
+                state["task_id"] = None
+                return f"🎉 Voice cloning completed! Original saved in 'samples', clone saved in 'clones'. Voice '{voice_name}' is ready for TTS!", refresh_voice_list(), state
                 
             except Exception as e:
                 print(f"❌ Voice cloning error: {str(e)}")
                 import traceback
                 traceback.print_exc()
-                return f"Error during voice cloning: {str(e)}", refresh_voice_list()
+                state["is_running"] = False
+                state["task_id"] = None
+                return f"Error during voice cloning: {str(e)}", refresh_voice_list(), state
         
         def save_voice(audio_path: str, name: str, desc: str) -> Tuple[str, List[List[str]]]:
             """Save a voice sample."""
@@ -322,9 +386,16 @@ def create_ui(tts_engine: Optional[AudiobookTTS] = None) -> gr.Blocks:
                 voice_desc,
                 exaggeration,
                 cfg_weight,
-                temperature
+                temperature,
+                job_state
             ],
-            outputs=[status, voice_list]
+            outputs=[status, voice_list, job_state, clone_btn, stop_btn]
+        )
+        
+        stop_btn.click(
+            fn=stop_cloning,
+            inputs=[job_state],
+            outputs=[status, job_state, clone_btn, stop_btn]
         )
         
         save_btn.click(
